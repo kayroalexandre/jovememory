@@ -24,7 +24,7 @@ npm run evaluate -- calibration /caminho/privado/gate-labels.json
 
 O script escolhe no treino o limiar com maior F1, usando o maior limiar no empate, e avalia esse número no holdout separado. Retorna matriz de confusão, precisão, recall e F1. Não muda configuração e não declara a escala calibrada. Avalie tamanho, vazamento entre splits, representatividade e custo de falsas admissões. Um limiar com recall baixo não se torna correto porque teve zero falso positivo em poucas amostras.
 
-Os padrões públicos continuam escrita 0,60 e travessia 0,75, **não calibrados**. O gate é indicativo e toda memória exige revisão separada. A recomendação de um modelo não comprova verdade, segurança ou autorização de conteúdo.
+Os padrões públicos continuam escrita 0,60 e travessia 0,75, **não calibrados**. O gate de escrita é indicativo; ativação automática é a política padrão e independe desse score ou da disponibilidade de modelo. Revisão separada é opção explícita `MEMORY_REVIEW_MODE=manual`. A recomendação de um modelo não comprova verdade, segurança ou autorização de conteúdo.
 
 ## Evidências já verificadas
 

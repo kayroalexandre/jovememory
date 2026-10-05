@@ -16,7 +16,7 @@ const databaseUrl=(user,secret)=>{const url=new URL('postgresql://127.0.0.1:5547
 const values={NODE_ENV:'development',HOST:'127.0.0.1',PORT:3000,PUBLIC_URL:'http://127.0.0.1:3000',LOCAL_DATABASE_PASSWORD:password,
   MIGRATION_DATABASE_URL:databaseUrl('jovememory_owner',password),
   DATABASE_URL:databaseUrl('jovememory_app',appPassword),
-  AUTH_PROFILES:JSON.stringify(profiles),STDIO_PROFILE:'local-writer',ENABLE_PROVIDER:'false',
+  AUTH_PROFILES:JSON.stringify(profiles),STDIO_PROFILE:'local-writer',ENABLE_PROVIDER:'false',MEMORY_REVIEW_MODE:'automatic',
   S3_ENDPOINT:'http://127.0.0.1:59071',S3_REGION:'us-east-1',S3_BUCKET:'jovememory-dev',
   S3_ACCESS_KEY_ID:'local-'+randomBytes(12).toString('hex'),S3_SECRET_ACCESS_KEY:randomBytes(32).toString('hex')};
 await writeFile('.env',Object.entries(values).map(([key,value])=>`${key}=${value}`).join('\n')+'\n',{mode:0o600,flag:'wx'});

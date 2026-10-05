@@ -31,6 +31,7 @@ Configure pelo Railway:
 | `DATABASE_URL` | URL privada da role runtime `jovememory_app`, com senha exclusiva |
 | `MIGRATION_DATABASE_URL` | URL administrativa privada; necessária só no job de migration/pre-deploy |
 | `AUTH_PROFILES` | JSON privado de IDs, hashes, roles e workspaces de produção |
+| `MEMORY_REVIEW_MODE` | `automatic` por padrão; `manual` somente para instalações que desejam revisão separada |
 | `ENABLE_PROVIDER` | `false` inicialmente; habilite após configurar modelo/chave e limites de custo |
 | `PROVIDER_API_KEY`, modelos/dimensão | Valores privados/selecionados pelo operador; sem chave/modelo pessoal distribuído |
 | `S3_ENDPOINT` | `${{Media.ENDPOINT}}` |

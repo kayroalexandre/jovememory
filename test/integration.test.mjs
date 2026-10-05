@@ -22,7 +22,7 @@ test('Isolated database, object storage, MCP and backup lifecycle',async t=>{
   await admin.query(`CREATE DATABASE ${dbName}`);
   const adminUrl=database(process.env.MIGRATION_DATABASE_URL,dbName),appUrl=database(process.env.DATABASE_URL,dbName);
   const restoreName='jovememory_restore_'+suffix;
-  const c=config({...process.env,DATABASE_URL:appUrl,ENABLE_PROVIDER:'false',S3_BUCKET:'test-'+suffix});
+  const c=config({...process.env,DATABASE_URL:appUrl,ENABLE_PROVIDER:'false',S3_BUCKET:'test-'+suffix,MEMORY_REVIEW_MODE:'manual'});
   const reader={id:'test-reader',role:'reader',workspaces:['synthetic-a']},writer={id:'test-writer',role:'writer',workspaces:['synthetic-a']},
     reviewer={id:'test-reviewer',role:'reviewer',workspaces:['synthetic-a']},operator={id:'test-admin',role:'admin',workspaces:['synthetic-a','synthetic-b']};
   let store,server,bucketCreated=false,restoreCreated=false,backupDir;
@@ -171,6 +171,87 @@ test('Isolated database, object storage, MCP and backup lifecycle',async t=>{
         assert.equal((await client.callTool({name:'memory_search',arguments:{workspace:'synthetic-b',query:'synthetic'}})).isError,true);
         assert.equal((await client.callTool({name:'memory_search',arguments:{workspace:'synthetic-a',query:'synthetic',unexpected:'synthetic'}})).isError,true);
       } finally {await client.close();}
+    });
+    await t.test('Automatic writes activate immediately without a reviewer, including continuity and version replacement',async()=>{
+      const automatic=new Service(store,{...c,reviewMode:'automatic'});
+      const profile={id:'automatic-writer',role:'writer',workspaces:['synthetic-b']},w='synthetic-b';
+      const auto=(name,args)=>automatic.call(name,{workspace:w,...args},profile);
+      const capabilities=await automatic.call('memory_capabilities',{},profile);
+      assert.equal(capabilities.review,'automatic');assert.equal(capabilities.review_mode,'automatic');
+      assert.ok(!capabilities.tools.includes('memory_review'));
+      const first=await auto('memory_write',{content:'Automatic nebula memory.'});
+      assert.equal(first.outcome,'accepted');assert.equal(first.review_required,false);
+      assert.equal(first.item.status,'active');assert.equal(first.item.reviewer,'system:auto');
+      assert.equal(first.gate.status,'unavailable');
+      assert.equal((await auto('memory_search',{query:'nebula'})).results[0].id,first.item.id);
+      const audit=(await auto('memory_mutations',{id:first.item.id})).mutations;
+      assert.deepEqual(audit.map(x=>x.operation),['propose','accept']);
+      assert.equal(audit[1].actor,'system:auto');assert.equal(audit[1].payload.automatic,true);
+      const checkpoint=await auto('memory_checkpoint',{session:'automatic-session',title:'Automatic continuity',summary:'Continue synthetic nebula work.',references:[first.item.id]});
+      assert.equal((await auto('memory_resume',{session:'automatic-session'})).checkpoints[0].id,checkpoint.item.id);
+      const record=await auto('memory_record',{kind:'decision',key:'automatic.storage',title:'Automatic decision',statement:'Use the synthetic nebula store.',basis:'asserted',references:[first.item.id]});
+      assert.equal((await auto('memory_project',{})).records[0].id,record.item.id);
+      const before=(await store.stats(w)).counts;
+      await assert.rejects(auto('memory_record',{kind:'evidence',key:'invalid.measurement',title:'Invalid',statement:'Synthetic measurement',basis:'measured'}),{code:'RECORD'});
+      assert.deepEqual((await store.stats(w)).counts,before);
+      const concurrent=await Promise.allSettled([
+        auto('memory_update_item',{id:first.item.id,content:'Updated automatic nebula one.',reason:'Synthetic change'}),
+        auto('memory_update_item',{id:first.item.id,content:'Updated automatic nebula two.',reason:'Synthetic concurrent change'})]);
+      assert.equal(concurrent.filter(x=>x.status==='fulfilled').length,1);
+      const replacement=concurrent.find(x=>x.status==='fulfilled').value.item;
+      assert.equal(replacement.status,'active');assert.equal((await store.read(w,first.item.id)).status,'invalidated');
+      assert.equal((await auto('memory_list_proposed',{})).items.some(x=>x.supersedes===first.item.id),false);
+      for(const [tool,input] of [
+        ['memory_ingest_markdown',{source:'docs/automatic.md',content:'# One\nAutomatic pulsar material.\n# Two\nAutomatic pulsar constraints.'}],
+        ['memory_ingest_project',{files:[{source:'docs/automatic-project.md',content:'# Three\nAutomatic pulsar project.'}]}]]) {
+        const plan=await auto(tool,input);assert.equal(plan.review_required,false);
+        const applied=await auto(tool,{...input,dry_run:false,plan_hash:plan.plan_hash});
+        assert.ok(applied.results.every(x=>x.status==='active'));
+        assert.ok((await auto(tool,{...input,dry_run:false,plan_hash:plan.plan_hash})).results.every(x=>x.skipped));
+      }
+      const extra=await auto('memory_propose_write',{content:'Automatic quasar second source.'});
+      assert.equal(extra.item.status,'active');
+      const plan=await auto('memory_consolidate',{ids:[replacement.id,extra.item.id]});
+      assert.equal(plan.review_required,false);
+      const merged=await auto('memory_consolidate',{ids:[replacement.id,extra.item.id],dry_run:false,plan_hash:plan.plan_hash});
+      assert.equal(merged.item.status,'active');assert.ok(merged.item.content.includes(extra.item.content));
+      assert.equal((await store.read(w,replacement.id)).status,'invalidated');assert.equal((await store.read(w,extra.item.id)).status,'invalidated');
+      const expires=await auto('memory_write',{content:'Automatic expired comet fact.',valid_until:'2000-01-01T00:00:00Z'});
+      assert.equal(expires.item.status,'active');assert.equal((await auto('memory_search',{query:'comet'})).results.length,0);
+      const expiredCounts=(await store.stats(w)).counts;
+      await assert.rejects(auto('memory_update_item',{id:expires.item.id,content:'Invalid automatic successor.',reason:'Expired predecessor'}),{code:'CONFLICT'});
+      assert.deepEqual((await store.stats(w)).counts,expiredCounts);
+      assert.equal((await store.read(w,expires.item.id)).status,'active');
+      await assert.rejects(automatic.call('memory_write',{workspace:'synthetic-a',content:'Outside scope'},profile),{code:'FORBIDDEN'});
+      await assert.rejects(automatic.call('memory_write',{workspace:w,content:'Reader denied'},reader),{code:'FORBIDDEN'});
+      await assert.rejects(auto('memory_review',{id:merged.item.id,action:'accept',reason:'Do not grant review'}),{code:'FORBIDDEN'});
+      for(const score of [0.1,0.9]) {
+        const gated=new Service(store,{...c,reviewMode:'automatic'},{provider:{decision:async()=>score}});
+        const result=await gated.call('memory_write',{workspace:w,content:'Synthetic advisory gate '+score},profile);
+        assert.equal(result.item.status,'active');assert.equal(result.gate.score,score);
+      }
+      // Any failure in the batch rolls back both insertion and automatic activation.
+      const count=(await store.stats(w)).counts;
+      const mutationsBefore=await store.mutations(w,{limit:100});
+      await assert.rejects(store.ingestion(w,{plan_hash:'synthetic',sections:[
+        {id:randomUUID(),source:'rollback',content:'Automatic rollback example.'},
+        {id:randomUUID(),source:'rollback',content:null}]},profile.id,true));
+      assert.deepEqual((await store.stats(w)).counts,count);
+      assert.deepEqual(await store.mutations(w,{limit:100}),mutationsBefore);
+    });
+    await t.test('Actual SDK HTTP writer activates memory and makes it immediately searchable',async()=>{
+      const token=randomBytes(32).toString('base64url'),profile={id:'automatic-http',role:'writer',workspaces:['synthetic-b'],sha256:hash(token)};
+      const autoConfig={...c,reviewMode:'automatic',profiles:[profile]};
+      const autoServer=createApp(new Service(store,autoConfig),autoConfig).listen(0,'127.0.0.1');
+      await new Promise(resolve=>autoServer.once('listening',resolve));
+      const client=new Client({name:'synthetic-auto-http',version:'1'});
+      try {
+        await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${autoServer.address().port}/mcp`),{requestInit:{headers:{Authorization:`Bearer ${token}`}}}));
+        const written=await client.callTool({name:'memory_write',arguments:{workspace:'synthetic-b',content:'Automatic HTTP magnetar continuity.'}});
+        assert.equal(written.structuredContent.item.status,'active');assert.equal(written.structuredContent.review_required,false);
+        const search=await client.callTool({name:'memory_search',arguments:{workspace:'synthetic-b',query:'magnetar'}});
+        assert.equal(search.structuredContent.results[0].id,written.structuredContent.item.id);
+      } finally {await client.close();autoServer.closeAllConnections();await new Promise(resolve=>autoServer.close(resolve));}
     });
     await t.test('Actual SDK stdio client negotiates and receives only MCP frames',async()=>{
       const token=randomBytes(32).toString('base64url');

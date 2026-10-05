@@ -1,6 +1,6 @@
 # jovememory
 
-Memória persistente para agentes de desenvolvimento: fontes organizadas por workspace, busca híbrida, propostas revisadas, histórico auditável e retomada de projetos. Implementação nova, com desenvolvimento local e produção no Railway.
+Memória persistente para agentes de desenvolvimento: fontes organizadas por workspace, busca híbrida, ativação automática, histórico auditável e retomada de projetos. Implementação nova, com desenvolvimento local e produção no Railway.
 
 O servidor oferece **32 ferramentas MCP** por stdio e Streamable HTTP autenticado. As 28 funções da aplicação anterior foram reconstruídas; quatro ferramentas complementam administração de nós/grafo, indexação e recuperação privada de mídia. Os contratos novos e suas diferenças estão em [PARITY.md](docs/PARITY.md).
 
@@ -26,10 +26,12 @@ npm start
 
 ## Fluxo de memória
 
-1. Um perfil `writer` propõe conteúdo com `memory_propose_write`, ingestão, checkpoint ou registro de projeto.
-2. Outro perfil, `reviewer`, aceita ou rejeita com motivo. Propostas não entram na recuperação comum.
+1. Um perfil `writer` grava conteúdo com `memory_write`, `memory_propose_write`, ingestão, checkpoint ou registro de projeto.
+2. Por padrão, a memória é ativada na mesma transação e fica disponível imediatamente, sem aprovação humana. A resposta informa `outcome: accepted`, `item.status: active` e `review_required: false`.
 3. `reader` pesquisa candidatos e relê fontes. Resultados incluem workspace, ID, hash, proveniência e limites de verificação.
-4. Atualizações e consolidações criam propostas; somente o aceite invalida as versões anteriores, preservando história.
+4. Atualizações e consolidações ativam o sucessor e invalidam as versões anteriores atomicamente, preservando história e auditoria.
+
+`MEMORY_REVIEW_MODE=automatic` é o padrão no local e no Railway. A ativação automática respeita autenticação, workspace, schemas, referências e validade; não comprova a verdade do conteúdo. `memory_capabilities` informa a política efetiva. `manual` é uma opção para instalações que desejam manter propostas pendentes até a revisão por outro perfil; essa opção não é necessária para usar o sistema. Mudar a política afeta novas escritas, sem aprovar silenciosamente propostas antigas.
 
 Exemplo sintético via CLI local, usando JSON no stdin:
 
@@ -46,7 +48,7 @@ Sem provedor, busca textual, grafo, recência, revisão e continuidade funcionam
 
 `npm run index -- example-project local-admin` indexa itens aceitos. Chamadas externas podem ter custo. Modelos distintos e dimensões diferentes não são comparados. Falhas semânticas são declaradas, preservando a recuperação textual; a travessia entre workspaces fecha quando seu gate falha.
 
-Os limiares declarados são escrita **0,60** e travessia **0,75**, ambos **não calibrados para este projeto**. Gate não aceita propostas automaticamente. Rerank é opcional e ordena candidatos sem transformá-los em fatos verificados.
+Os limiares declarados são escrita **0,60** e travessia **0,75**, ambos **não calibrados para este projeto**. O gate de escrita é indicativo: score baixo ou provedor indisponível não bloqueiam a ativação no modo automático. A política é local e não exige chamada paga. Rerank é opcional e ordena candidatos sem transformá-los em fatos verificados.
 
 ## Produção Railway
 

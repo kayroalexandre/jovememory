@@ -24,6 +24,12 @@ test('Configuration fails closed without explicit credentials and validates prod
   assert.throws(()=>config({DATABASE_URL:'unused'}));
   assert.throws(()=>config({NODE_ENV:'production',PUBLIC_URL:'http://localhost',AUTH_PROFILES:'[]'}));
 });
+test('Write policy defaults to automatic, accepts manual opt-in and rejects an unknown policy',()=>{
+  const env={DATABASE_URL:'unused',AUTH_PROFILES:JSON.stringify([{id:'synthetic-writer',role:'writer',workspaces:['synthetic-a'],sha256:hash('synthetic-token')}])};
+  assert.equal(config(env).reviewMode,'automatic');
+  assert.equal(config({...env,MEMORY_REVIEW_MODE:'manual'}).reviewMode,'manual');
+  assert.throws(()=>config({...env,MEMORY_REVIEW_MODE:'unknown'}));
+});
 test('Strict tools reject unknown fields and out-of-range limits without coercion',()=>{
   assert.equal(Object.keys(TOOLS).length,32);
   for(const value of [{workspace:'synthetic-a',query:'source',bogus:true},{workspace:'synthetic-a',query:'source',limit:'10'},{workspace:'synthetic-a',query:'source',limit:101}]) assert.equal(TOOLS.memory_search.schema.safeParse(value).success,false);
