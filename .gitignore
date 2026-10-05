@@ -1,0 +1,17 @@
+node_modules/
+.env
+.env.*
+!.env.example
+private/
+coverage/
+*.log
+*.dump
+*.sql.gz
+*.sqlite*
+*.db
+*.pem
+*.key
+*.jsonl
+backups/
+exports/
+.DS_Store

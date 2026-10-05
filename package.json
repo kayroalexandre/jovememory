@@ -1,0 +1,38 @@
+{
+  "name": "jovememory",
+  "version": "0.1.0",
+  "description": "Memória persistente e revisada para agentes, local e Railway.",
+  "scripts": {
+    "start": "node --env-file-if-exists=.env src/http.mjs",
+    "dev": "node --env-file-if-exists=.env --watch src/http.mjs",
+    "mcp": "node --env-file-if-exists=.env src/stdio.mjs",
+    "cli": "node --env-file-if-exists=.env src/cli.mjs",
+    "migrate": "node --env-file-if-exists=.env scripts/migrate.mjs",
+    "local:init": "node scripts/local-init.mjs",
+    "local:up": "docker compose --env-file .env up -d --wait",
+    "test": "node --test test/unit.test.mjs",
+    "test:integration": "node scripts/integration.mjs",
+    "lint": "node scripts/check.mjs",
+    "secret-scan": "node scripts/public-check.mjs",
+    "verify": "npm run lint && npm run secret-scan && npm test",
+    "backup": "node --env-file-if-exists=.env scripts/backup.mjs",
+    "backup:verify": "node --env-file-if-exists=.env scripts/restore-check.mjs",
+    "evaluate": "node --env-file-if-exists=.env scripts/evaluate.mjs",
+    "index": "node --env-file-if-exists=.env scripts/index-workspace.mjs"
+  },
+  "keywords": [],
+  "license": "Apache-2.0",
+  "dependencies": {
+    "@aws-sdk/client-s3": "3.1146.0",
+    "@modelcontextprotocol/sdk": "1.32.1",
+    "express": "5.2.1",
+    "pdfjs-dist": "6.4.299",
+    "pg": "8.23.1",
+    "zod": "4.6.5"
+  },
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.22.0"
+  }
+}

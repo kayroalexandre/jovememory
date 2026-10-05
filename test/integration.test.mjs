@@ -1,0 +1,213 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { randomBytes, randomUUID } from 'node:crypto';
+import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import pg from 'pg';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { S3Client, CreateBucketCommand, ListObjectsV2Command, DeleteObjectsCommand, DeleteBucketCommand } from '@aws-sdk/client-s3';
+import { config, hash } from '../src/config.mjs';
+import { Store } from '../src/store.mjs';
+import { Service } from '../src/service.mjs';
+import { createApp } from '../src/http.mjs';
+import { migrate } from '../scripts/migrate.mjs';
+import { createBackup, verifyRestore, externalDirectory } from '../scripts/backup-lib.mjs';
+const suffix=randomBytes(8).toString('hex'),dbName='jovememory_test_'+suffix;
+const database=(url,name)=>{const u=new URL(url);u.pathname='/'+name;return u.href;};
+test('Isolated database, object storage, MCP and backup lifecycle',async t=>{
+  assert.match(process.env.MIGRATION_DATABASE_URL,/127\.0\.0\.1:55471\/jovememory_dev/);
+  const admin=new pg.Client({connectionString:process.env.MIGRATION_DATABASE_URL});await admin.connect();
+  await admin.query(`CREATE DATABASE ${dbName}`);
+  const adminUrl=database(process.env.MIGRATION_DATABASE_URL,dbName),appUrl=database(process.env.DATABASE_URL,dbName);
+  const restoreName='jovememory_restore_'+suffix;
+  const c=config({...process.env,DATABASE_URL:appUrl,ENABLE_PROVIDER:'false',S3_BUCKET:'test-'+suffix});
+  const reader={id:'test-reader',role:'reader',workspaces:['synthetic-a']},writer={id:'test-writer',role:'writer',workspaces:['synthetic-a']},
+    reviewer={id:'test-reviewer',role:'reviewer',workspaces:['synthetic-a']},operator={id:'test-admin',role:'admin',workspaces:['synthetic-a','synthetic-b']};
+  let store,server,bucketCreated=false,restoreCreated=false,backupDir;
+  const s3=new S3Client({...c.s3,forcePathStyle:true,maxAttempts:1});
+  try {
+    await migrate(adminUrl);await migrate(adminUrl);
+    const owner=new pg.Client({connectionString:adminUrl});await owner.connect();
+    try {await owner.query("INSERT INTO workspaces(name) VALUES('synthetic-a'),('synthetic-b')");} finally {await owner.end();}
+    await s3.send(new CreateBucketCommand({Bucket:c.s3.bucket}));bucketCreated=true;
+    store=new Store(appUrl);const service=new Service(store,c);
+    const called=new Set();
+    const call=async(name,args={},profile=writer)=>{const result=await service.call(name,args,profile);called.add(name);return result;};
+    const accept=async id=>call('memory_review',{workspace:'synthetic-a',id,action:'accept',reason:'Synthetic test review'},reviewer);
+    let itemId,otherId,sourceIds,mediaId;
+    await t.test('RLS prevents cross-workspace reads even without WHERE, and cannot alter audit',async()=>{
+      await call('memory_propose_write',{workspace:'synthetic-b',content:'Isolated private synthetic value'},operator);
+      const client=new pg.Client({connectionString:appUrl});await client.connect();
+      try {
+        await client.query('BEGIN');await client.query("SELECT set_config('app.workspace','synthetic-a',true)");
+        assert.equal((await client.query('SELECT * FROM items')).rowCount,0);
+        await client.query('COMMIT');
+        await assert.rejects(client.query("UPDATE audit SET actor='changed'"));
+        const role=(await client.query('SELECT rolsuper,rolbypassrls FROM pg_roles WHERE rolname=current_user')).rows[0];
+        assert.deepEqual(role,{rolsuper:false,rolbypassrls:false});
+      } finally {await client.end();}
+      await assert.rejects(call('memory_read',{workspace:'synthetic-b',id:randomUUID()},reader),{code:'FORBIDDEN'});
+      await assert.rejects(call('memory_propose_write',{workspace:'synthetic-a',content:'Denied'},reader),{code:'FORBIDDEN'});
+    });
+    await t.test('Proposals stay hidden, IDs are immutable and independent review is enforced',async()=>{
+      const proposal=await call('memory_write',{workspace:'synthetic-a',content:'A synthetic cobalt telescope architecture decision.'});itemId=proposal.item.id;
+      assert.equal(proposal.outcome,'proposed');assert.equal(proposal.gate.status,'unavailable');
+      assert.equal((await call('memory_search',{workspace:'synthetic-a',query:'cobalt telescope'},reader)).results.length,0);
+      await assert.rejects(service.call('memory_review',{workspace:'synthetic-a',id:itemId,action:'accept',reason:'Same actor'}, {...operator,id:writer.id}),{code:'REVIEW'});
+      await assert.rejects(call('memory_propose_write',{workspace:'synthetic-a',id:itemId,content:'Overwrite'}),{code:'EXISTS'});
+      assert.equal((await call('memory_list_proposed',{workspace:'synthetic-a'})).items.length,1);
+      await accept(itemId);
+      assert.equal((await call('memory_search',{workspace:'synthetic-a',query:'cobalt telescope'},reader)).results[0].id,itemId);
+      const row=(await call('memory_read',{workspace:'synthetic-a',id:itemId},reader)).item;assert.equal(row.content_hash,hash(row.content));
+      const pending=await call('memory_propose_write',{workspace:'synthetic-a',content:'Reject this synthetic section'});
+      await call('memory_review',{workspace:'synthetic-a',id:pending.item.id,action:'reject',reason:'Rejected example'},reviewer);
+      assert.equal((await call('memory_read',{workspace:'synthetic-a',id:pending.item.id},reader)).item.content,'');
+      await assert.rejects(call('memory_propose_write',{workspace:'synthetic-a',content:'Reject this synthetic section'}),{code:'EXISTS'});
+    });
+    await t.test('Node movement, feedback and concurrent replacement review preserve predecessor',async()=>{
+      await call('memory_create_node',{workspace:'synthetic-a',node:'design',label:'Synthetic design'});
+      await call('memory_move_item',{workspace:'synthetic-a',id:itemId,node:'design',reason:'Group by topic'});
+      await call('memory_feedback',{workspace:'synthetic-a',id:itemId,useful:true,reason:'Useful synthetic decision'});
+      assert.equal((await call('memory_read',{workspace:'synthetic-a',id:itemId},reader)).item.importance,0.55);
+      assert.equal((await call('memory_tree',{workspace:'synthetic-a'},reader)).nodes[0].item_count,1);
+      const replacement=await call('memory_update_item',{workspace:'synthetic-a',id:itemId,content:'Updated cobalt telescope decision.',reason:'Revised source'});
+      assert.equal((await call('memory_read',{workspace:'synthetic-a',id:itemId},reader)).item.status,'active');
+      const concurrent=await Promise.allSettled([accept(replacement.item.id),accept(replacement.item.id)]);
+      assert.equal(concurrent.filter(r=>r.status==='fulfilled').length,1);
+      assert.equal((await call('memory_read',{workspace:'synthetic-a',id:itemId},reader)).item.status,'invalidated');
+      itemId=replacement.item.id;
+    });
+    await t.test('Temporal validity is enforced before retrieval and recent unrelated rows do not prove a match',async()=>{
+      const expired=await call('memory_propose_write',{workspace:'synthetic-a',content:'Expired synthetic quartz information.',valid_until:'2000-01-01T00:00:00Z'});await accept(expired.item.id);
+      const future=await call('memory_propose_write',{workspace:'synthetic-a',content:'Future synthetic quartz information.',valid_from:'2099-01-01T00:00:00Z'});await accept(future.item.id);
+      assert.equal((await call('memory_search',{workspace:'synthetic-a',query:'quartz'},reader)).results.length,0);
+      assert.equal((await call('memory_search',{workspace:'synthetic-a',query:'unknownunlikelyword'},reader)).results.length,0);
+    });
+    await t.test('Ingestion preview hash, tombstones, idempotency and atomic application',async()=>{
+      const input={workspace:'synthetic-a',source:'docs/synthetic.md',content:'# First\nSynthetic archival material.\n# Second\nSynthetic operating constraints.\n'};
+      const preview=await call('memory_ingest_markdown',input);
+      await assert.rejects(call('memory_ingest_markdown',{...input,content:input.content+'change',dry_run:false,plan_hash:preview.plan_hash}),{code:'PLAN'});
+      const result=await call('memory_ingest_markdown',{...input,dry_run:false,plan_hash:preview.plan_hash});sourceIds=result.results.map(r=>r.id);
+      const duplicate=await call('memory_ingest_markdown',{...input,dry_run:false,plan_hash:preview.plan_hash});assert.ok(duplicate.results.every(r=>r.skipped));
+      for(const id of sourceIds) await accept(id);
+      const project={workspace:'synthetic-a',files:[{source:'docs/other.md',content:'# Project\nAnother synthetic document.\n'}]};
+      const plan=await call('memory_ingest_project',project);
+      const output=await call('memory_ingest_project',{...project,dry_run:false,plan_hash:plan.plan_hash});otherId=output.results[0].id;await accept(otherId);
+    });
+    await t.test('Continuity, typed evidence, ambiguity diagnosis and byte budgets',async()=>{
+      const checkpoint=await call('memory_checkpoint',{workspace:'synthetic-a',session:'synthetic-session',title:'Synthetic checkpoint',summary:'Resume only with source verification.',next_steps:['Review source'],references:[itemId]});await accept(checkpoint.item.id);
+      assert.equal((await call('memory_resume',{workspace:'synthetic-a',session:'synthetic-session'},reader)).checkpoints[0].reference_diagnostics[0].unchanged,true);
+      await assert.rejects(call('memory_record',{workspace:'synthetic-a',kind:'evidence',key:'example.measurement',title:'Measurement',statement:'Synthetic measured value',basis:'measured'}),{code:'RECORD'});
+      for(const statement of ['Synthetic value one','Synthetic value two']) {
+        const record=await call('memory_record',{workspace:'synthetic-a',kind:'evidence',key:'example.measurement',title:'Synthetic measurement',statement,basis:'measured',observed_at:'2026-01-01T00:00:00Z',references:[itemId]});await accept(record.item.id);
+      }
+      const view=await call('memory_project',{workspace:'synthetic-a'},reader);assert.equal(view.ambiguities.length,1);
+      const context=await call('memory_context',{workspace:'synthetic-a',query:'synthetic',max_bytes:1024},reader);
+      assert.ok(Buffer.byteLength(JSON.stringify(context))<=1024);assert.equal(context.evidence.answer_verified,false);
+      const page=await call('memory_list',{workspace:'synthetic-a',limit:1},reader);assert.ok(page.next_cursor);
+      const next=await call('memory_list',{workspace:'synthetic-a',limit:1,cursor:page.next_cursor,as_of:page.as_of},reader);assert.notEqual(next.items[0].id,page.items[0].id);
+      await assert.rejects(call('memory_list',{workspace:'synthetic-a',limit:1,cursor:page.next_cursor,as_of:page.as_of,status:'proposed'},reader),{code:'CURSOR'});
+    });
+    await t.test('Lossless consolidation retains immutable sources and invalidates only after review',async()=>{
+      const plan=await call('memory_consolidate',{workspace:'synthetic-a',ids:sourceIds});
+      const proposed=await call('memory_consolidate',{workspace:'synthetic-a',ids:sourceIds,dry_run:false,plan_hash:plan.plan_hash});
+      assert.ok(proposed.item.content.includes('Synthetic archival material.'));assert.equal((await service.store.read('synthetic-a',sourceIds[0])).status,'active');
+      await accept(proposed.item.id);
+      for(const id of sourceIds) assert.equal((await service.store.read('synthetic-a',id)).status,'invalidated');
+      assert.equal(proposed.item.metadata.consolidation.sources.length,2);
+    });
+    await t.test('Private media roundtrip, lexical search, hash integrity and parent eligibility',async()=>{
+      const bytes=Buffer.from('Synthetic cobalt media transcript.');
+      const attachment=await call('memory_attach_media',{workspace:'synthetic-a',item_id:itemId,base64:bytes.toString('base64'),mime:'text/plain'});mediaId=attachment.media.id;
+      const repeated=await call('memory_attach_media',{workspace:'synthetic-a',item_id:itemId,base64:bytes.toString('base64'),mime:'text/plain'});assert.equal(repeated.media.id,mediaId);assert.equal(repeated.media.deduplicated,true);
+      const result=await call('memory_read_media',{workspace:'synthetic-a',id:mediaId},reader);assert.ok(Buffer.from(result.base64,'base64').equals(bytes));
+      assert.equal(result.sha256,hash(bytes));assert.equal((await call('memory_search_media',{workspace:'synthetic-a',query:'cobalt transcript'},reader)).results[0].id,mediaId);
+      await assert.rejects(call('memory_read_media',{workspace:'synthetic-b',id:mediaId},reader),{code:'FORBIDDEN'});
+    });
+    await t.test('PDF parser extracts a synthetic text layer without cloud calls',async()=>{
+      const stream='BT /F1 12 Tf 72 720 Td (Synthetic PDF copper evidence.) Tj ET';
+      const objects=['<< /Type /Catalog /Pages 2 0 R >>','<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+        '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>',
+        `<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`,'<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>'];
+      let pdf='%PDF-1.4\n';const offsets=[];
+      objects.forEach((object,index)=>{offsets.push(Buffer.byteLength(pdf));pdf+=`${index+1} 0 obj\n${object}\nendobj\n`;});
+      const xref=Buffer.byteLength(pdf);pdf+=`xref\n0 6\n0000000000 65535 f \n${offsets.map(n=>String(n).padStart(10,'0')+' 00000 n \n').join('')}trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+      const attachment=await call('memory_attach_media',{workspace:'synthetic-a',item_id:otherId,base64:Buffer.from(pdf).toString('base64'),mime:'application/pdf'});
+      assert.equal(attachment.extraction_status,'pdf_text');
+      assert.equal((await call('memory_search_media',{workspace:'synthetic-a',query:'copper evidence'},reader)).results[0].id,attachment.media.id);
+    });
+    await t.test('Declared graph, fail-closed cross-workspace gate and semantic indexing with mock provider',async()=>{
+      await call('memory_link',{workspace:'synthetic-a',target_workspace:'synthetic-a',source_id:itemId,target_id:otherId,relation:'Synthetic relation'},operator);
+      assert.ok((await call('memory_search',{workspace:'synthetic-a',query:'cobalt'},reader)).results.some(r=>r.provenance.includes('graph')));
+      await call('memory_link',{workspace:'synthetic-a',target_workspace:'synthetic-b',relation:'Synthetic shared technical material'},operator);
+      const cross=await call('memory_cross_workspace',{workspace:'synthetic-a',query:'synthetic'},operator);assert.equal(cross.traversal[0].status,'gate_unavailable_closed');
+      const mocked=new Service(store,{...c,provider:{...c.provider,enabled:true,dimensions:3,embeddingModel:'synthetic-model'}},{provider:{embed:async()=>[1,0,0],decision:async()=>0.9}});
+      await mocked.call('memory_index',{workspace:'synthetic-a',id:itemId},operator);called.add('memory_index');
+      const search=await mocked.call('memory_search',{workspace:'synthetic-a',query:'cobalt',rerank:true},reader);
+      assert.ok(search.results.some(r=>r.provenance.includes('semantic')));
+      assert.equal((await mocked.call('memory_cross_workspace',{workspace:'synthetic-a',query:'synthetic'},operator)).traversal[0].status,'traversed');
+    });
+    await t.test('Diagnostics, audit and scoped catalog do not reveal credentials',async()=>{
+      await call('memory_stats',{workspace:'synthetic-a'},reader);assert.equal((await call('memory_doctor',{workspace:'synthetic-a'},reader)).schema,1);
+      assert.ok((await call('memory_mutations',{workspace:'synthetic-a',id:itemId},reader)).mutations.length>0);
+      assert.deepEqual((await call('memory_version',{},reader)).workspaces,['synthetic-a']);
+      const capabilities=await call('memory_capabilities',{},reader);assert.ok(!capabilities.tools.includes('memory_review'));
+      assert.ok(!JSON.stringify(capabilities).includes(c.s3.credentials.secretAccessKey));
+    });
+    await t.test('Actual SDK HTTP client authenticates, respects policies, rejects Origin and strict args',async()=>{
+      const token=randomBytes(32).toString('base64url');c.profiles=[{...reader,sha256:hash(token)}];
+      server=createApp(service,c).listen(0,'127.0.0.1');await new Promise(resolve=>server.once('listening',resolve));
+      const base=`http://127.0.0.1:${server.address().port}`;
+      assert.equal((await fetch(base+'/mcp',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'})).status,401);
+      assert.equal((await fetch(base+'/mcp',{method:'POST',headers:{'Content-Type':'application/json',Origin:'https://untrusted.example',Authorization:`Bearer ${token}`},body:'{}'})).status,403);
+      assert.equal((await fetch(base+'/health',{headers:{Host:'untrusted.example',Origin:'https://untrusted.example'}})).status,403);
+      const client=new Client({name:'synthetic-test',version:'1'});
+      try {
+        await client.connect(new StreamableHTTPClientTransport(new URL(base+'/mcp'),{requestInit:{headers:{Authorization:`Bearer ${token}`}}}));
+        const catalog=await client.listTools();assert.ok(catalog.tools.some(x=>x.name==='memory_search'));assert.ok(!catalog.tools.some(x=>x.name==='memory_write'));
+        const version=await client.callTool({name:'memory_version',arguments:{}});assert.equal(version.structuredContent.name,'jovememory');
+        assert.equal((await client.callTool({name:'memory_search',arguments:{workspace:'synthetic-b',query:'synthetic'}})).isError,true);
+        assert.equal((await client.callTool({name:'memory_search',arguments:{workspace:'synthetic-a',query:'synthetic',unexpected:'synthetic'}})).isError,true);
+      } finally {await client.close();}
+    });
+    await t.test('Actual SDK stdio client negotiates and receives only MCP frames',async()=>{
+      const token=randomBytes(32).toString('base64url');
+      const client=new Client({name:'synthetic-stdio',version:'1'});
+      const transport=new StdioClientTransport({command:process.execPath,args:['src/stdio.mjs'],env:{...process.env,DATABASE_URL:appUrl,
+        AUTH_PROFILES:JSON.stringify([{...reader,sha256:hash(token)}]),STDIO_PROFILE:reader.id,ENABLE_PROVIDER:'false'},stderr:'pipe'});
+      try {await client.connect(transport);const result=await client.callTool({name:'memory_version',arguments:{}});assert.equal(result.structuredContent.name,'jovememory');}
+      finally {await client.close();}
+    });
+    await t.test('Full snapshot backup includes media; scratch restore compares exact table fingerprints',async()=>{
+      backupDir=await mkdtemp(tmpdir()+'/jovememory-backup-');
+      await assert.rejects(externalDirectory(process.cwd()),{code:'BACKUP'});
+      const result=await createBackup(adminUrl,c.s3,backupDir);assert.equal(result.objects,2);
+      await admin.query(`CREATE DATABASE ${restoreName}`);restoreCreated=true;
+      const restored=await verifyRestore(backupDir,database(process.env.MIGRATION_DATABASE_URL,restoreName));assert.equal(restored.database_fingerprints,'matched');
+      await assert.rejects(verifyRestore(backupDir,database(process.env.MIGRATION_DATABASE_URL,restoreName)),{code:'RESTORE'});
+      const manifest=JSON.parse(await readFile(backupDir+'/manifest.json','utf8'));
+      await writeFile(backupDir+'/'+manifest.objects[0].file,'tampered');
+      await assert.rejects(verifyRestore(backupDir,database(process.env.MIGRATION_DATABASE_URL,restoreName)),{code:'INTEGRITY'});
+    });
+    await t.test('Soft deletion removes parent media from retrieval without erasing history',async()=>{
+      await call('memory_delete',{workspace:'synthetic-a',id:itemId,reason:'Synthetic deletion'},reviewer);
+      assert.equal((await call('memory_read',{workspace:'synthetic-a',id:itemId},reader)).item.status,'deleted');
+      assert.equal((await call('memory_search_media',{workspace:'synthetic-a',query:'cobalt transcript'},reader)).results.length,0);
+      await assert.rejects(call('memory_read_media',{workspace:'synthetic-a',id:mediaId},reader),{code:'MEDIA'});
+    });
+    assert.equal(called.size,32,`Missing tools: ${Object.keys((await import('../src/schemas.mjs')).TOOLS).filter(x=>!called.has(x))}`);
+  } finally {
+    if(server) {server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
+    await store?.close();
+    if(bucketCreated) {
+      const objects=await s3.send(new ListObjectsV2Command({Bucket:c.s3.bucket}));
+      if(objects.Contents?.length) await s3.send(new DeleteObjectsCommand({Bucket:c.s3.bucket,Delete:{Objects:objects.Contents.map(x=>({Key:x.Key}))}}));
+      await s3.send(new DeleteBucketCommand({Bucket:c.s3.bucket}));
+    }
+    if(backupDir) await rm(backupDir,{recursive:true,force:true});
+    if(restoreCreated) await admin.query(`DROP DATABASE ${restoreName}`);
+    await admin.query(`DROP DATABASE ${dbName}`);await admin.end();
+  }
+});

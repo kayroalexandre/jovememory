@@ -1,0 +1,11 @@
+import { spawnSync, spawn } from 'node:child_process';
+import { readFile } from 'node:fs/promises';
+import { ensure } from '../src/config.mjs';
+const env=process.env;
+const compose=spawnSync('docker',['compose','--env-file','.env','ps','--status','running','--services'],{encoding:'utf8'});
+ensure(compose.status===0 && compose.stdout.includes('postgres') && compose.stdout.includes('storage'),'TEST','Start only the jovememory Compose development services first.');
+const text=await readFile('.env','utf8');
+const local=Object.fromEntries(text.split('\n').filter(l=>l && !l.startsWith('#')).map(l=>[l.slice(0,l.indexOf('=')),l.slice(l.indexOf('=')+1)]));
+ensure(local.MIGRATION_DATABASE_URL?.includes('127.0.0.1:55471/jovememory_dev'),'TEST','Integration refuses nonlocal or unrelated databases.');
+const child=spawn(process.execPath,['--test','test/integration.test.mjs'],{stdio:'inherit',env:{...env,...local,ENABLE_PROVIDER:'false'}});
+child.on('exit',code=>{process.exitCode=code || 0;});

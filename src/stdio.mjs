@@ -1,0 +1,12 @@
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { config, ensure } from './config.mjs';
+import { Store } from './store.mjs';
+import { Service } from './service.mjs';
+import { createMcp } from './mcp.mjs';
+console.log=console.error;console.warn=console.error;console.info=console.error;
+const c=config();const profile=c.profiles.find(p=>p.id===process.env.STDIO_PROFILE);
+ensure(profile,'CONFIG','Choose an explicit STDIO_PROFILE. Local process access is trusted.');
+const store=new Store(c.databaseUrl);await store.health();
+const server=createMcp(new Service(store,c),profile);
+server.onclose=()=>{void store.close();};
+await server.connect(new StdioServerTransport(process.stdin,process.stdout,{maxBufferSize:8388608}));
