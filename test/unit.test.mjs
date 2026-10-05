@@ -4,7 +4,7 @@ import { randomBytes } from 'node:crypto';
 import { authenticate, authorize, hash, bounded, validateEndpoint, config } from '../src/config.mjs';
 import { planIngestion } from '../src/ingest.mjs';
 import { fuse, isEligible } from '../src/service.mjs';
-import { Provider, readBounded } from '../src/provider.mjs';
+import { Provider, readBounded, selectFreeModels } from '../src/provider.mjs';
 import { blockedPath, secretPatterns } from '../scripts/public-check.mjs';
 import { TOOLS } from '../src/schemas.mjs';
 test('Bearer authentication rejects malformed values, unknown tokens and unauthorized workspace/role',()=>{
@@ -38,7 +38,9 @@ test('OpenRouter model roles default to the planned specialized matrix',()=>{
   assert.equal(models.decisionModel,'upstage/solar-decide');
   assert.equal(models.rerankModel,'qwen/qwen3.8-flash');
   assert.equal(models.knowledgeModel,'deepseek/deepseek-v4-flash');
-  assert.equal(models.synthesisModel,'stealth/space-bunny-alpha');
+  assert.equal(models.synthesisModel,'openrouter/free');
+  assert.equal(models.inferenceFallbackModels[0],'deepseek/deepseek-v4-pro');
+  assert.equal(models.inferenceMaxInputPrice,0.25);assert.equal(models.inferenceMaxOutputPrice,1.50);
   assert.match(models.decisionEndpoint,/\/api\/alpha\/decisions$/);
 });
 test('Strict tools reject unknown fields and out-of-range limits without coercion',()=>{
@@ -94,7 +96,7 @@ test('Evaluation distinguishes relevant retrieval from negative queries and keep
 test('Provider wire contract routes embeddings, decisions, rerank, knowledge and synthesis without leaking remote errors',async()=>{
   const {createServer}=await import('node:http');
   const key='synthetic-private-value',requests=[];
-  const server=createServer(async(req,res)=>{const chunks=[];for await(const part of req) chunks.push(part);const body=JSON.parse(Buffer.concat(chunks));requests.push({path:req.url,body});
+  const server=createServer(async(req,res)=>{if(req.method==='GET') {res.setHeader('Content-Type','application/json');res.end(JSON.stringify({data:[]}));return;}const chunks=[];for await(const part of req) chunks.push(part);const body=JSON.parse(Buffer.concat(chunks));requests.push({path:req.url,body});
     res.setHeader('Content-Type','application/json');
     if(body.input==='fail') {res.writeHead(401);res.end(JSON.stringify({error:key}));return;}
     if(req.url==='/decisions') {res.end(JSON.stringify({answers:{score:{type:'noul',noul:0.84}}}));return;}
@@ -102,9 +104,9 @@ test('Provider wire contract routes embeddings, decisions, rerank, knowledge and
       const byModel={
         'qwen/qwen3.8-flash':{scores:[{id:'a',score:0.9},{id:'b',score:0.2}]},
         'deepseek/deepseek-v4-flash':{summary:'Synthetic summary',keywords:['memory'],entities:['Jove']},
-        'stealth/space-bunny-alpha':{summary:'Synthetic context',cited_ids:['a']}
+        'openrouter/free':{summary:'Synthetic context',cited_ids:['a']}
       };
-      res.end(JSON.stringify({choices:[{message:{content:JSON.stringify(byModel[body.model])}}]}));return;
+      res.end(JSON.stringify({model:body.model==='openrouter/free'?'synthetic/large:free':body.model,choices:[{message:{content:JSON.stringify(byModel[body.model])}}]}));return;
     }
     res.end(JSON.stringify({data:[{embedding:[1,0,0]}]}));
   });
@@ -112,14 +114,14 @@ test('Provider wire contract routes embeddings, decisions, rerank, knowledge and
   try {
     const base=`http://127.0.0.1:${server.address().port}`;
     const p=new Provider({enabled:true,key,endpoint:base,decisionEndpoint:base+'/decisions',embeddingModel:'google/gemini-embedding-2',dimensions:3,
-      decisionModel:'upstage/solar-decide',rerankModel:'qwen/qwen3.8-flash',knowledgeModel:'deepseek/deepseek-v4-flash',synthesisModel:'stealth/space-bunny-alpha'});
+      decisionModel:'upstage/solar-decide',rerankModel:'qwen/qwen3.8-flash',knowledgeModel:'deepseek/deepseek-v4-flash',synthesisModel:'openrouter/free'});
     assert.deepEqual(await p.embed('synthetic text'),[1,0,0]);await p.embed('synthetic text');
     assert.deepEqual(await p.embedImage('c3ludGhldGlj','image/png'),[1,0,0]);
     assert.equal(await p.decision({content:'fact'},'Is this durable?'),0.84);
     const ranked=await p.rerank('query',[{id:'a',content:'one'},{id:'b',content:'two'}]);
     assert.equal(ranked.model,'qwen/qwen3.8-flash');assert.equal(ranked.scores.get('a'),0.9);
     const extracted=await p.extract('synthetic');assert.equal(extracted.model,'deepseek/deepseek-v4-flash');
-    const synthesized=await p.synthesize('query',[{id:'a',content:'one'}]);assert.equal(synthesized.model,'stealth/space-bunny-alpha');
+    const synthesized=await p.synthesize('query',[{id:'a',content:'one'}]);assert.equal(synthesized.model,'synthetic/large:free');assert.equal(synthesized.routing.tier,'free');
     assert.ok(requests.some(x=>x.path==='/decisions' && x.body.model==='upstage/solar-decide'));
     const qwen=requests.find(x=>x.body.model==='qwen/qwen3.8-flash');
     assert.equal(qwen.body.response_format.type,'json_schema');assert.equal(qwen.body.response_format.json_schema.strict,true);assert.equal(qwen.body.reasoning.enabled,false);
@@ -156,4 +158,36 @@ test('Auxiliary inference is opt-in and additional scoped profiles preserve exis
   const env={DATABASE_URL:'unused',AUTH_PROFILES:JSON.stringify([base]),EXTRA_AUTH_PROFILES:JSON.stringify([extra])};
   assert.deepEqual(config(env).profiles,[base,extra]);
   assert.throws(()=>config({...env,EXTRA_AUTH_PROFILES:JSON.stringify([base])}),{code:'CONFIG'});
+});
+
+
+test('Free routing filters live zero-price text models and prefers configured capacity before smaller models',()=>{
+  const entry=(id,context_length=100000,price='0',output=['text'])=>({id,name:id,context_length,pricing:{prompt:price,completion:price},architecture:{input_modalities:['text'],output_modalities:output}});
+  const rows=[null,{},entry('synthetic/a-small-8b:free'),entry('synthetic/z-huge-550b:free'),entry('synthetic/music',100000,'0',['audio']),entry('synthetic/paid',100000,'0.01'),entry('synthetic/mispriced:free',100000,null),entry('synthetic/short-999b:free',2048),entry('openrouter/free')];
+  assert.deepEqual(selectFreeModels(rows,[],1000),['synthetic/z-huge-550b:free','synthetic/a-small-8b:free']);
+  assert.deepEqual(selectFreeModels(rows,['synthetic/a-small-8b:free'],1000),['synthetic/a-small-8b:free','synthetic/z-huge-550b:free']);
+  assert.deepEqual(selectFreeModels(rows,[],200000),[]);
+});
+
+test('Native free routing tries preferred free models, validates citations and bounds paid fallback prices',async()=>{
+  const p=new Provider({enabled:true,key:'synthetic',synthesisModel:'openrouter/free',inferenceFallbackModels:['deepseek/deepseek-v4-pro','deepseek/deepseek-v4-flash'],inferenceMaxInputPrice:0.25,inferenceMaxOutputPrice:1.5});
+  p.freeModels=async()=>['synthetic/large-550b:free','synthetic/large-120b:free'];
+  const requests=[];p.request=async(path,input)=>{requests.push(input);return {model:input.models?.[0] ?? input.model,choices:[{message:{content:JSON.stringify({summary:'Synthetic compact evidence',cited_ids:[input.model==='deepseek/deepseek-v4-pro'?'source':'unknown']})}}]};};
+  const result=await p.synthesize('query',[{id:'source',content:'Synthetic source'}]);
+  assert.deepEqual(requests[0].models,['synthetic/large-550b:free','synthetic/large-120b:free']);assert.equal(requests[1].model,'openrouter/free');
+  assert.deepEqual(requests[0].provider.max_price,{prompt:0,completion:0,request:0});assert.deepEqual(requests[1].provider.max_price,{prompt:0,completion:0,request:0});
+  assert.deepEqual(requests[2].provider.max_price,{prompt:0.25,completion:1.5,request:0});assert.equal(requests[2].response_format.type,'json_schema');
+  assert.equal(result.model,'deepseek/deepseek-v4-pro');assert.equal(result.routing.paid_fallback,true);
+  requests.length=0;p.request=async(path,input)=>{requests.push(input);return {model:'synthetic/large-550b:free',usage:{cost:0},choices:[{message:{content:JSON.stringify({summary:'Synthetic evidence',cited_ids:['source']})}}]};};
+  const free=await p.synthesize('query',[{id:'source',content:'Synthetic source'}]);assert.equal(free.routing.tier,'free');assert.equal(free.routing.paid_fallback,false);assert.equal(requests.length,1);
+  const disabled=new Provider({enabled:false,key:'synthetic',synthesisModel:'openrouter/free'});disabled.freeModels=async()=>{throw new Error('Catalog must not be contacted.');};
+  await assert.rejects(disabled.synthesize('query',[{id:'source',content:'Synthetic'}]),{code:'PROVIDER_DISABLED'});
+});
+
+test('Unavailable model catalog uses the free router without inventing its effective model',async()=>{
+  const p=new Provider({enabled:true,key:'synthetic',synthesisModel:'openrouter/free',inferenceFallbackModels:[]});p.freeModels=async()=>[];
+  const requests=[];p.request=async(path,input)=>{requests.push(input);return {model:'synthetic/actual:free',choices:[{message:{content:'{"summary":"Synthetic","cited_ids":["source"]}'}}]};};
+  const output=await p.synthesize('query',[{id:'source',content:'Synthetic'}]);assert.equal(output.model,'synthetic/actual:free');assert.equal(requests[0].model,'openrouter/free');
+  p.request=async()=>({choices:[{message:{content:'{"summary":"Synthetic","cited_ids":["source"]}'}}]});
+  await assert.rejects(p.synthesize('query',[{id:'source',content:'Synthetic'}]),{code:'PROVIDER'});
 });

@@ -37,3 +37,9 @@ Solicite `memory_context(synthesize:true)` quando várias fontes longas exigirem
 Provisione o workspace por `memory_create_workspace` com perfil administrativo autorizado. O resultado é idempotente e não cria memórias nem amplia permissões. Configure para cada projeto um perfil `writer` limitado ao seu workspace; grave o token em arquivo privado fora do checkout e use referência de arquivo do cliente. Associe o diretório ao nome explícito em instruções privadas e confirme o perfil efetivo por `memory_capabilities`. Nunca use outro workspace como destino improvisado para um projeto ainda não provisionado.
 
 A credencial cotidiana não cria workspaces nem administra outros projetos. Conteúdo de conversas e arquivos só é persistido quando o agente chama a API: uma conexão MCP não importa retroativamente o histórico da sessão. Nós, links, registros tipados, referências e checkpoints oferecem organização, mas precisam ser alimentados com contexto pertinente pelo agente.
+
+## Rota de inferência gratuita
+
+O agente continua escolhendo quando sintetizar. Não fixe expectativas no nome do modelo primário: `openrouter/free` é uma rota, e `synthesis.model` contém o modelo efetivo. Leia `synthesis.routing.tier` e `paid_fallback`; escolha gratuita válida não representa falha. Fallback pago é declarado em `degraded`. Preferência por modelos maiores não prova maior acurácia. O texto sintetizado continua sendo evidência auxiliar com referências a conferir.
+
+O workspace da aplicação de memória não é memória global do usuário. Guarde nele somente o projeto da própria aplicação; conteúdo de outros projetos precisa de associação e perfil exclusivos, inclusive quando for produzido em uma sessão já aberta antes da configuração do cliente.

@@ -310,6 +310,13 @@ test('Isolated database, object storage, MCP and backup lifecycle',async t=>{
       assert.equal(compact.results[0].content_hash,hash(fullContent));assert.ok(fullContent.startsWith(compact.results[0].content));
       assert.ok(Buffer.byteLength(JSON.stringify(compact))<=4096);assert.ok(compact.bytes_used<Buffer.byteLength(fullContent));
       assert.equal((await auto('memory_read',{id:large.item.id})).item.content,fullContent);
+      const freeService=new Service(store,{...enabled,provider:{...enabled.provider,synthesisModel:'openrouter/free'}},{provider});
+      provider.synthesize=async(query,items)=>({model:'synthetic/large:free',summary:'Synthetic free evidence',cited_ids:items.map(x=>x.id),routing:{requested_model:'openrouter/free',effective_model:'synthetic/large:free',tier:'free',paid_fallback:false}});
+      const freeContext=await freeService.call('memory_context',{workspace:w,query:'compactprobe',limit:1,max_bytes:4096,synthesize:true},profile);
+      assert.equal(freeContext.synthesis.model,'synthetic/large:free');assert.ok(!freeContext.degraded.includes('synthesis_fallback'));
+      provider.synthesize=async(query,items)=>({model:'synthetic/paid',summary:'Synthetic paid evidence',cited_ids:items.map(x=>x.id),routing:{requested_model:'openrouter/free',effective_model:'synthetic/paid',tier:'paid_fallback',paid_fallback:true}});
+      const paidContext=await freeService.call('memory_context',{workspace:w,query:'compactprobe',limit:1,max_bytes:4096,synthesize:true},profile);
+      assert.ok(paidContext.degraded.includes('synthesis_fallback'));assert.equal(paidContext.synthesis.routing.paid_fallback,true);
       const replacement=await auto('memory_update_item',{id:first.item.id,content:'Updated synthetic modelflow observatory.',reason:'Synthetic revision'});
       assert.equal(replacement.indexing[0].status,'indexed');assert.equal((await store.read(w,first.item.id)).status,'invalidated');
       assert.equal(replacement.enrichment.status,'skipped');assert.equal(replacement.item.metadata.model_analysis,undefined);assert.equal(replacement.gate.score,0.8);

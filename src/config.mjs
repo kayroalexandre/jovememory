@@ -1,7 +1,9 @@
 import { z } from 'zod';
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-export const VERSION = '0.3.0';
+export const VERSION = '0.4.0';
+export const FREE_INFERENCE_PREFERENCES = ['nvidia/nemotron-3-ultra-550b-a55b:free','nvidia/nemotron-3-super-120b-a12b:free','google/gemma-4-31b-it:free'];
+export const INFERENCE_FALLBACK_MODELS = ['deepseek/deepseek-v4-pro','deepseek/deepseek-v4-flash','xiaomi/mimo-v2.5'];
 export const hash = value => createHash('sha256').update(value).digest('hex');
 export class Fault extends Error {
   constructor(code, message) { super(message); this.code = code; }
@@ -26,6 +28,7 @@ function providerKey(env) {
 export function config(env = process.env) {
   const number = (key, fallback, min, max) => z.coerce.number().finite().min(min).max(max).parse(env[key] || fallback);
   const production = env.NODE_ENV === 'production';
+  const modelList=(key,defaults)=>z.array(z.string().regex(/^[a-z0-9_.-]+\/[a-zA-Z0-9_.:-]+$/)).max(10).parse(env[key]===undefined ? defaults:env[key].split(',').map(x=>x.trim()).filter(Boolean));
   const profiles = z.array(profileSchema).parse([...JSON.parse(env.AUTH_PROFILES || '[]'),...JSON.parse(env.EXTRA_AUTH_PROFILES || '[]')]);
   ensure(new Set(profiles.map(p=>p.id)).size === profiles.length && new Set(profiles.map(p=>p.sha256)).size === profiles.length,
     'CONFIG', 'Profiles must have unique identifiers and token hashes.');
@@ -50,7 +53,11 @@ export function config(env = process.env) {
       decisionModel: env.DECISION_MODEL || 'upstage/solar-decide',
       rerankModel: env.RERANK_MODEL || 'qwen/qwen3.8-flash',
       knowledgeModel: env.KNOWLEDGE_MODEL || 'deepseek/deepseek-v4-flash',
-      synthesisModel: env.SYNTHESIS_MODEL || 'stealth/space-bunny-alpha' },
+      synthesisModel: env.SYNTHESIS_MODEL || 'openrouter/free',
+      freeInferencePreferences:modelList('FREE_INFERENCE_PREFERENCES',FREE_INFERENCE_PREFERENCES),
+      inferenceFallbackModels:modelList('INFERENCE_FALLBACK_MODELS',INFERENCE_FALLBACK_MODELS),
+      inferenceMaxInputPrice:number('INFERENCE_MAX_INPUT_PRICE',0.25,0,10),
+      inferenceMaxOutputPrice:number('INFERENCE_MAX_OUTPUT_PRICE',1.50,0,10) },
     thresholds: { write: number('WRITE_THRESHOLD',0.6,0,1), cross: number('CROSS_WORKSPACE_THRESHOLD',0.75,0,1), calibrated:false },
     s3: env.S3_ENDPOINT && env.S3_BUCKET && env.S3_ACCESS_KEY_ID && env.S3_SECRET_ACCESS_KEY ? {
       endpoint: env.S3_ENDPOINT, region: env.S3_REGION || 'auto', bucket: env.S3_BUCKET,
@@ -80,7 +87,9 @@ export function publicConfig(c) {
   return { version: VERSION, provider_enabled:c.provider.enabled, embedding_model:c.provider.embeddingModel || null,
     decision_model:c.provider.decisionModel || null,
     automatic_indexing:c.provider.enabled, rerank_default:true,
-    inference:{context_synthesis:'explicit_request',write_enrichment:'explicit_request',consolidation_summary:'explicit_request',agent_is_primary:true},
+    inference:{context_synthesis:'explicit_request',write_enrichment:'explicit_request',consolidation_summary:'explicit_request',agent_is_primary:true,
+      free_router:c.provider.synthesisModel==='openrouter/free',free_preferences:c.provider.freeInferencePreferences,
+      paid_fallback_models:c.provider.inferenceFallbackModels,paid_price_limit_usd_per_million:{prompt:c.provider.inferenceMaxInputPrice,completion:c.provider.inferenceMaxOutputPrice}},
     models:{ embedding:c.provider.embeddingModel || null, decision:c.provider.decisionModel || null,
       rerank:c.provider.rerankModel || null, knowledge:c.provider.knowledgeModel || null, synthesis:c.provider.synthesisModel || null },
     thresholds:c.thresholds, review_mode:c.reviewMode,
