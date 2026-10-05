@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 export const VERSION = '0.2.0';
 export const hash = value => createHash('sha256').update(value).digest('hex');
 export class Fault extends Error {
@@ -16,6 +17,12 @@ export function runtimeDatabaseUrl(adminUrl, explicitPassword) {
   const password=explicitPassword || createHmac('sha256',decodeURIComponent(url.password)).update('jovememory-runtime-v1/'+url.hostname+url.pathname).digest('hex');
   url.username='jovememory_app';url.password=password;return url;
 }
+function providerKey(env) {
+  const direct=env.OPENROUTER_API_KEY || env.PROVIDER_API_KEY;
+  if(direct) return direct;
+  if(!env.PROVIDER_API_KEY_FILE) return undefined;
+  try { return readFileSync(env.PROVIDER_API_KEY_FILE,'utf8').trim() || undefined; } catch { return undefined; }
+}
 export function config(env = process.env) {
   const number = (key, fallback, min, max) => z.coerce.number().finite().min(min).max(max).parse(env[key] || fallback);
   const production = env.NODE_ENV === 'production';
@@ -25,8 +32,9 @@ export function config(env = process.env) {
   const publicUrl = new URL(env.PUBLIC_URL || 'http://127.0.0.1:3000');
   ensure(!production || publicUrl.protocol === 'https:', 'CONFIG', 'Production requires an HTTPS PUBLIC_URL.');
   ensure(profiles.length > 0, 'CONFIG', 'Configure explicit authentication profiles before starting.');
-  const endpoint = env.PROVIDER_BASE_URL || 'https://openrouter.ai/api/v1';
-  validateEndpoint(endpoint, production);
+  const endpoint = env.OPENROUTER_BASE_URL || env.PROVIDER_BASE_URL || 'https://openrouter.ai/api/v1';
+  const decisionEndpoint = env.OPENROUTER_DECISIONS_URL || env.PROVIDER_DECISIONS_URL || 'https://openrouter.ai/api/alpha/decisions';
+  validateEndpoint(endpoint, production); validateEndpoint(decisionEndpoint, production);
   if (env.S3_ENDPOINT) validateEndpoint(env.S3_ENDPOINT, production);
   let databaseUrl=env.DATABASE_URL;
   if(!databaseUrl && env.MIGRATION_DATABASE_URL) databaseUrl=runtimeDatabaseUrl(env.MIGRATION_DATABASE_URL,env.APP_DATABASE_PASSWORD).href;
@@ -34,8 +42,13 @@ export function config(env = process.env) {
   return { production, profiles, publicUrl, host: env.HOST || (production ? '0.0.0.0':'127.0.0.1'),
     port: number('PORT',3000,1,65535), databaseUrl,
     reviewMode: z.enum(['automatic','manual']).parse(env.MEMORY_REVIEW_MODE || 'automatic'),
-    provider: { enabled: env.ENABLE_PROVIDER === 'true', endpoint, key: env.PROVIDER_API_KEY,
-      embeddingModel: env.EMBEDDING_MODEL, dimensions: number('EMBEDDING_DIMENSIONS',1536,1,4096), decisionModel: env.DECISION_MODEL },
+    provider: { enabled: env.ENABLE_PROVIDER === 'true', endpoint, decisionEndpoint, key: providerKey(env),
+      siteUrl: publicUrl.href, appName:'Jove Memory',
+      embeddingModel: env.EMBEDDING_MODEL || 'google/gemini-embedding-2', dimensions: number('EMBEDDING_DIMENSIONS',1536,1,4096),
+      decisionModel: env.DECISION_MODEL || 'upstage/solar-decide',
+      rerankModel: env.RERANK_MODEL || 'qwen/qwen3.8-flash',
+      knowledgeModel: env.KNOWLEDGE_MODEL || 'deepseek/deepseek-v4-flash',
+      synthesisModel: env.SYNTHESIS_MODEL || 'stealth/space-bunny-alpha' },
     thresholds: { write: number('WRITE_THRESHOLD',0.6,0,1), cross: number('CROSS_WORKSPACE_THRESHOLD',0.75,0,1), calibrated:false },
     s3: env.S3_ENDPOINT && env.S3_BUCKET && env.S3_ACCESS_KEY_ID && env.S3_SECRET_ACCESS_KEY ? {
       endpoint: env.S3_ENDPOINT, region: env.S3_REGION || 'auto', bucket: env.S3_BUCKET,
@@ -63,7 +76,10 @@ export function authorize(profile, permission, workspace) {
 }
 export function publicConfig(c) {
   return { version: VERSION, provider_enabled:c.provider.enabled, embedding_model:c.provider.embeddingModel || null,
-    decision_model:c.provider.decisionModel || null, thresholds:c.thresholds, review_mode:c.reviewMode,
+    decision_model:c.provider.decisionModel || null,
+    models:{ embedding:c.provider.embeddingModel || null, decision:c.provider.decisionModel || null,
+      rerank:c.provider.rerankModel || null, knowledge:c.provider.knowledgeModel || null, synthesis:c.provider.synthesisModel || null },
+    thresholds:c.thresholds, review_mode:c.reviewMode,
     storage_configured:Boolean(c.s3), limits:{ content_bytes:262144, request_bytes:8388608, context_bytes:16384,
       media_bytes:4194304, provider_timeout_ms:30000, provider_concurrency:4, http_concurrency:32 } };
 }
