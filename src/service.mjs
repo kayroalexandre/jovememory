@@ -84,7 +84,7 @@ export class Service {
       case 'memory_list': {const page=await s.page(w,a);return {workspace:w,...page,items:page.items.map(({content,metadata,...item})=>item)};}
       case 'memory_propose_write': return this.writeResult(w,await s.propose(w,a,actor,automatic));
       case 'memory_write': {
-        let gate={status:'skipped',threshold:this.config.thresholds.write,calibrated:true,model:this.config.provider.decisionModel};
+        let gate={status:'skipped',threshold:this.config.thresholds.write,calibrated:false,probability_calibrated:true,model:this.config.provider.decisionModel};
         let enrichment={status:'skipped',model:this.config.provider.knowledgeModel};
         try {const score=await this.provider.decision({workspace:w,content:a.content},'Is this durable knowledge worth retaining, such as an explicit fact, decision, preference, constraint or procedure?');gate={...gate,status:score>=gate.threshold?'recommended':'below_threshold',score};}
         catch {gate.status='unavailable';}
