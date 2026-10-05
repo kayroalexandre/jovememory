@@ -12,7 +12,7 @@
     "local:up": "docker compose --env-file .env up -d --wait",
     "test": "node --test test/unit.test.mjs",
     "test:integration": "node scripts/integration.mjs",
-    "lint": "node scripts/check.mjs",
+    "lint": "node scripts/check.mjs && node --import tsx scripts/check-railway.mjs",
     "secret-scan": "node scripts/public-check.mjs",
     "verify": "npm run lint && npm run secret-scan && npm test",
     "backup": "node --env-file-if-exists=.env scripts/backup.mjs",
@@ -34,5 +34,8 @@
   "type": "module",
   "engines": {
     "node": ">=22.22.0"
+  },
+  "devDependencies": {
+    "railway": "3.12.0"
   }
 }

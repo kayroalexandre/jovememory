@@ -1,6 +1,6 @@
 # jovememory
 
-Memória persistente para agentes de desenvolvimento: fontes organizadas por workspace, busca híbrida, propostas revisadas, histórico auditável e retomada de projetos. Implementação nova, com desenvolvimento local e produção preparada para Railway.
+Memória persistente para agentes de desenvolvimento: fontes organizadas por workspace, busca híbrida, propostas revisadas, histórico auditável e retomada de projetos. Implementação nova, com desenvolvimento local e produção no Railway.
 
 O servidor oferece **32 ferramentas MCP** por stdio e Streamable HTTP autenticado. As 28 funções da aplicação anterior foram reconstruídas; quatro ferramentas complementam administração de nós/grafo, indexação e recuperação privada de mídia. Os contratos novos e suas diferenças estão em [PARITY.md](docs/PARITY.md).
 
@@ -50,9 +50,9 @@ Os limiares declarados são escrita **0,60** e travessia **0,75**, ambos **não 
 
 ## Produção Railway
 
-A configuração pública [railway.json](railway.json) usa Railpack, migration anterior ao deploy e healthcheck. A topologia proposta tem um serviço Node, PostgreSQL com pgvector na rede privada e um Bucket Railway privado, com credenciais via variáveis de ambiente/referência. Não usa Compose em produção, storage próprio em produção, Redis ou disco persistente da aplicação.
+A configuração pública [.railway/railway.ts](.railway/railway.ts) descreve Railpack, migration anterior ao deploy, healthcheck e recursos por Infrastructure as Code. A topologia tem um serviço Node, PostgreSQL com pgvector na rede privada e um Bucket Railway privado, com credenciais via variáveis de ambiente/referência. Não usa Compose em produção, storage próprio em produção, Redis ou disco persistente da aplicação.
 
-Consulte o [procedimento operacional](docs/OPERATIONS.md) antes de ativar. Estar configurado para Railway não comprova um deploy saudável. Dados antigos não são importados automaticamente. PRs públicos não devem receber variáveis ou bancos de produção.
+Consulte o [procedimento operacional](docs/OPERATIONS.md). O arquivo IaC exige plan/apply explícitos; push de código não aplica infraestrutura. Serviços novos não leem o formato legado railway.json. O [estado da entrega](docs/STATUS.md) distingue configuração de validação remota. Dados antigos não são importados automaticamente. PRs públicos não devem receber variáveis ou bancos de produção.
 
 ## Verificação e documentação
 
