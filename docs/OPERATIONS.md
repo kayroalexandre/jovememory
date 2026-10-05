@@ -8,13 +8,19 @@ Use o fluxo de instalação do README. Compose é exclusivo do desenvolvimento: 
 
 Para criar perfis de escopo restrito, use `npm run cli -- profile <id> <reader|writer|reviewer|admin> <workspace...>`. O token e o JSON contendo seu hash ficam em `private/`. Adicione esse JSON a `AUTH_PROFILES` através de configuração privada e reinicie. `*` dá acesso a todos os workspaces; prefira nomes explícitos em produção. Perfis locais de bootstrap usam `*` por conveniência de desenvolvimento, não são copiados para produção.
 
-## Preparação Railway
+## Produção Railway
 
 Topologia: aplicação `jovememory`, serviço PostgreSQL com extensão pgvector e Bucket privado de mídia. A aplicação não precisa de volume. Banco deve usar rede privada, com volume/backups nativos; não gere proxy TCP público permanente. O PostgreSQL padrão do Railway não inclui necessariamente pgvector: selecione imagem/template apropriado.
 
 O projeto Railway deve ser privado, embora o repositório de código seja público. Desative ambientes automáticos de PR no primeiro provisionamento; código de PR público não recebe credenciais de produção. Use serviços/dados/variáveis separados para homologação.
 
-`railway.json` usa Railpack e declara `npm run migrate` como pre-deploy, `npm start` e `/health`. Configure pelo Railway:
+A configuração nativa do serviço deve declarar Railpack, build `npm ci --omit=dev`, pre-deploy `npm run migrate`, start `npm start`, healthcheck `/health` (120 segundos), restart ON_FAILURE (5 tentativas) e drenagem de 20 segundos. Banco e Bucket têm configurações próprias.
+
+Serviços novos não leem `railway.json`/`railway.toml`. [.railway/railway.ts](../.railway/railway.ts) usa o SDK IaC fixado como dependência de desenvolvimento. Ele descreve a instalação provisionada e conserva `AUTH_PROFILES`/senha PostgreSQL com `preserve()`. Não distribui segredos nem cria workspace/conteúdo. Para uma instalação nova, crie os recursos e valores privados pelo Railway antes de reconciliar. Credenciais do Bucket são referências nativas; o domínio gerado não é publicado no arquivo.
+
+O deploy desta instalação foi configurado pelas ferramentas nativas do Railway. A avaliação local/CI do SDK verifica a autoria; **não prova ausência de drift remoto**. Para assumir gerenciamento IaC, use CLI 5.42.1 ou superior, autentique e vincule explicitamente o projeto/ambiente, execute `railway config plan` e revise o diff antes de `railway config apply`. Não use `--include-variables` em pull, nem publique planos/evidências privados. Omitir recursos em uma configuração de projeto pode removê-los. Push/PR deste repositório não executa apply e CI não recebe credenciais Railway.
+
+Configure pelo Railway:
 
 | Variável | Origem/uso |
 | --- | --- |
@@ -37,9 +43,11 @@ Após migration, provisionar a role runtime com LOGIN e senha própria pela cone
 
 No primeiro provisionamento, deixar `DATABASE_URL` ausente ativa bootstrap: migration e runtime derivam uma senha exclusiva por HMAC-SHA256 da credencial administrativa nativa e da identidade do banco, sem escrever ou imprimir o segredo. `APP_DATABASE_PASSWORD` opcional pode substituir por uma senha aleatória independente de 64 caracteres hex. A URL de runtime usa a role `jovememory_app`; healthcheck recusa conexão superuser/BYPASSRLS. Esse modo simplifica o primeiro deploy; a aplicação ainda recebe a variável administrativa necessária ao pre-deploy. Para isolamento de privilégios completo, use um serviço administrativo separado para migrations e deixe só `DATABASE_URL` runtime no serviço público.
 
+Provisionar o primeiro workspace requer uma operação administrativa explícita. No primeiro deploy, pode-se executar um único pre-deploy `npm run migrate && npm run cli -- workspace <nome-autorizado>` na configuração privada do serviço. Depois de observar sucesso, restaurar o pre-deploy para `npm run migrate`. O comando é idempotente e não cria conteúdo. Não mantenha nomes de workspaces pessoais em configuração pública. Redeploy de um build existente pode conservar o snapshot anterior de configurações: após mudanças, confirme os comandos nos logs de um deploy novo pela fonte GitHub.
+
 O domínio deve apontar apenas para o serviço HTTP. Banco/S3 não têm páginas públicas. Um deploy só é operacional depois de migrations, healthcheck, `tools/list`, chamada MCP autenticada, recusa de chamada anônima e verificação de escopo. Saúde não testa provedor/S3; esses caminhos têm smoke separado. Recursos staged são preparação, não produção ativa.
 
-Fontes: [Railway config](https://docs.railway.com/config-as-code/reference), [pgvector](https://docs.railway.com/guides/rag-pipeline-pgvector), [Bucket e referências](https://docs.railway.com/storage-buckets), [isolamento por ambiente](https://docs.railway.com/guides/isolate-staging-production).
+Fontes: [Railway Infrastructure as Code](https://docs.railway.com/infrastructure-as-code), [pgvector](https://docs.railway.com/guides/rag-pipeline-pgvector), [Bucket e referências](https://docs.railway.com/storage-buckets), [isolamento por ambiente](https://docs.railway.com/guides/isolate-staging-production).
 
 ## Backup e verificação
 
