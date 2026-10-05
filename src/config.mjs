@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
-export const VERSION = '0.1.0';
+export const VERSION = '0.2.0';
 export const hash = value => createHash('sha256').update(value).digest('hex');
 export class Fault extends Error {
   constructor(code, message) { super(message); this.code = code; }
@@ -33,6 +33,7 @@ export function config(env = process.env) {
   ensure(databaseUrl, 'CONFIG', 'DATABASE_URL or explicit runtime bootstrap configuration is required.');
   return { production, profiles, publicUrl, host: env.HOST || (production ? '0.0.0.0':'127.0.0.1'),
     port: number('PORT',3000,1,65535), databaseUrl,
+    reviewMode: z.enum(['automatic','manual']).parse(env.MEMORY_REVIEW_MODE || 'automatic'),
     provider: { enabled: env.ENABLE_PROVIDER === 'true', endpoint, key: env.PROVIDER_API_KEY,
       embeddingModel: env.EMBEDDING_MODEL, dimensions: number('EMBEDDING_DIMENSIONS',1536,1,4096), decisionModel: env.DECISION_MODEL },
     thresholds: { write: number('WRITE_THRESHOLD',0.6,0,1), cross: number('CROSS_WORKSPACE_THRESHOLD',0.75,0,1), calibrated:false },
@@ -62,7 +63,7 @@ export function authorize(profile, permission, workspace) {
 }
 export function publicConfig(c) {
   return { version: VERSION, provider_enabled:c.provider.enabled, embedding_model:c.provider.embeddingModel || null,
-    decision_model:c.provider.decisionModel || null, thresholds:c.thresholds,
+    decision_model:c.provider.decisionModel || null, thresholds:c.thresholds, review_mode:c.reviewMode,
     storage_configured:Boolean(c.s3), limits:{ content_bytes:262144, request_bytes:8388608, context_bytes:16384,
       media_bytes:4194304, provider_timeout_ms:30000, provider_concurrency:4, http_concurrency:32 } };
 }

@@ -2,7 +2,7 @@
 
 ## Decisões da reconstrução
 
-A finalidade é memória persistente, revisada e recuperável para agentes. A implementação anterior serviu de inventário funcional, sem copiar seu código, configuração, dados ou histórico Git.
+A finalidade é memória persistente, auditável e recuperável para agentes. A implementação anterior serviu de inventário funcional, sem copiar seu código, configuração, dados ou histórico Git.
 
 Um serviço Node.js ESM oferece MCP por stdio local e HTTP remoto. O SDK oficial cuida do protocolo; Express faz autenticação, validação de Host/Origin e limites HTTP. O catálogo e schemas são definidos em `src/schemas.mjs`; `Service` centraliza autorização e operações para que CLI e transportes compartilhem as mesmas regras.
 
@@ -24,13 +24,15 @@ Travessia entre workspaces requer relação declarada, autorização sobre desti
 
 ## Escrita, história e continuidade
 
-Toda escrita nova produz uma proposta com ID imutável. `memory_write` consulta um gate opcional, mas não aceita automaticamente. Outro perfil deve revisar; isso separa credenciais de proposição e revisão, sem provar que pertencem a seres humanos diferentes.
+Toda escrita nova tem ID imutável. `MEMORY_REVIEW_MODE=automatic`, padrão, grava e ativa a memória na mesma transação. Auditoria registra o proponente e a ativação pelo ator interno `system:auto`, que não é uma credencial de cliente. Erros de validação/conflito abortam a transação inteira; não deixam itens parcialmente ativados. Isso vale também para o nome compatível `memory_propose_write`, checkpoints, registros, ingestão, atualização e consolidação.
+
+`memory_write` consulta um gate opcional e devolve score/status indicativos, sem condicionar a ativação ao provedor ou ao limiar não calibrado. `manual` mantém propostas pendentes e revisão por outro perfil; a mudança de configuração só afeta novas escritas. Propostas anteriores continuam identificadas como pendentes até uma revisão explícita. Aprovação automática não declara conteúdo verdadeiro, seguro ou autorizado para execução.
 
 Atualização cria um sucessor. Aceite bloqueia proposta/predecessor na transação e invalida o anterior. Consolidação conserva o texto integral e snapshots dos itens; preview tem hash e o aceite verifica fontes sob lock. Alterações concorrentes de estado/hash/nó impedem aceitar um plano obsoleto. Auditoria recebe a mutação na mesma transação; UPDATE/DELETE nela são recusados por privilégios e trigger.
 
 Rejeição apaga o texto da linha principal e conserva o hash/tombstone, evitando ressuscitar o mesmo conteúdo por ingestão. **Snapshots anteriores na auditoria permanecem privados**, assim como dumps; rejeição/delete não implementam apagamento legal ou purga física. Soft delete retira o conteúdo de busca sem apagar história.
 
-Checkpoints e registros tipados reutilizam o mesmo fluxo de revisão. Referências carregam IDs e hashes observados. Contexto, retomada e visão de projeto releem elegibilidade/hash e declaram lacunas. Não há snapshot distribuído entre busca e releitura, nem verificação automática da verdade de uma medição externa.
+Checkpoints e registros tipados reutilizam a política de escrita; no modo automático entram imediatamente em retomada/visão de projeto. Referências carregam IDs e hashes observados. Contexto, retomada e visão de projeto releem elegibilidade/hash e declaram lacunas. Não há snapshot distribuído entre busca e releitura, nem verificação automática da verdade de uma medição externa.
 
 ## Configuração e simplicidade
 

@@ -20,6 +20,9 @@ export class Service {
     this.store=store;this.config=config;this.provider=provider || new Provider(config.provider);this.media=media || new Media(config.s3);
   }
   available(profile) { return Object.values(TOOLS).filter(tool=>{try {authorize(profile,tool.permission);return true;}catch{return false;}}); }
+  writeResult(workspace,item,extra={}) {
+    return {workspace,item,outcome:item.status==='active'?'accepted':'proposed',review_required:item.status==='proposed',...extra};
+  }
   async call(name,input,profile) {
     const tool=TOOLS[name];ensure(tool,'TOOL','Unknown tool.');
     const parsed=tool.schema.safeParse(input);ensure(parsed.success,'INPUT','Arguments do not match the strict tool schema.');
@@ -71,32 +74,32 @@ export class Service {
       lexical_engine:'postgresql_portuguese_fts',vector_engine:'pgvector_exact',vector_similarity_floor:null};
   }
   async dispatch(name,a,p) {
-    const s=this.store,w=a.workspace,actor=p.id;
+    const s=this.store,w=a.workspace,actor=p.id,automatic=this.config.reviewMode==='automatic';
     switch(name) {
       case 'memory_version': return {name:'jovememory',version:VERSION,workspaces:(await s.workspaces()).filter(x=>p.workspaces.includes('*') || p.workspaces.includes(x)),evidence};
-      case 'memory_capabilities': return {...publicConfig(this.config),profile:{id:actor,role:p.role,workspaces:p.workspaces},tools:this.available(p).map(t=>t.name),review:'separate_profile_required',transports:['stdio','streamable-http']};
+      case 'memory_capabilities': return {...publicConfig(this.config),profile:{id:actor,role:p.role,workspaces:p.workspaces},tools:this.available(p).map(t=>t.name),review:automatic?'automatic':'separate_profile_required',transports:['stdio','streamable-http']};
       case 'memory_search': return this.search(a);
       case 'memory_read': {const item=await s.read(w,a.id);if(item) item.links=item.links.filter(link=>p.workspaces.includes('*') || p.workspaces.includes(link.target_workspace));return {workspace:w,item,evidence};}
       case 'memory_tree':return {workspace:w,nodes:await s.tree(w)};
       case 'memory_list': {const page=await s.page(w,a);return {workspace:w,...page,items:page.items.map(({content,metadata,...item})=>item)};}
-      case 'memory_propose_write': return {workspace:w,item:await s.propose(w,a,actor),outcome:'proposed'};
+      case 'memory_propose_write': return this.writeResult(w,await s.propose(w,a,actor,automatic));
       case 'memory_write': {
         let gate={status:'skipped',threshold:this.config.thresholds.write,calibrated:false};
         try {const score=await this.provider.decision({workspace:w,content:a.content},'Score whether this is durable knowledge: an explicit fact, decision, preference, constraint or procedure.');gate={...gate,status:score>=gate.threshold?'recommended':'below_threshold',score};}
         catch {gate.status='unavailable';}
-        return {workspace:w,item:await s.propose(w,{...a,gate},actor),outcome:'proposed',gate,review_required:true};
+        return this.writeResult(w,await s.propose(w,{...a,gate},actor,automatic),{gate});
       }
       case 'memory_review':return {workspace:w,...await s.review(w,a.id,a.action==='accept',a.reason,actor)};
       case 'memory_list_proposed':return {workspace:w,...await s.page(w,{...a,status:'proposed'})};
-      case 'memory_update_item':return {workspace:w,item:await s.update(w,a.id,{content:a.content,valid_from:a.valid_from,valid_until:a.valid_until},a.reason,actor),outcome:'proposed'};
+      case 'memory_update_item':return this.writeResult(w,await s.update(w,a.id,{content:a.content,valid_from:a.valid_from,valid_until:a.valid_until},a.reason,actor,automatic));
       case 'memory_delete':return {workspace:w,...await s.mutate(w,a.id,'delete',actor,{reason:a.reason})};
       case 'memory_move_item':return {workspace:w,...await s.mutate(w,a.id,'move',actor,{node:a.node,reason:a.reason})};
       case 'memory_feedback':return {workspace:w,...await s.mutate(w,a.id,'feedback',actor,{useful:a.useful,reason:a.reason})};
       case 'memory_ingest_markdown':case 'memory_ingest_project': {
         const plan=planIngestion(w,a.files || [{source:a.source,content:a.content}]);
-        if(a.dry_run) return {...plan,sections:plan.sections.map(({content,...section})=>({...section,bytes:Buffer.byteLength(content)}))};
+        if(a.dry_run) return {...plan,mode:automatic?'automatic':'proposed',review_required:!automatic,sections:plan.sections.map(({content,...section})=>({...section,bytes:Buffer.byteLength(content)}))};
         ensure(a.plan_hash===plan.plan_hash,'PLAN','Apply requires the unchanged preview plan hash.');
-        return {workspace:w,...await s.ingestion(w,plan,actor)};
+        return {workspace:w,...await s.ingestion(w,plan,actor,automatic),review_required:!automatic};
       }
       case 'memory_context': {
         const search=await this.search(a),results=[];
@@ -111,7 +114,7 @@ export class Service {
       }
       case 'memory_checkpoint': {
         const metadata={contract:1,session:a.session,title:a.title,next_steps:a.next_steps,references:await this.references(w,a.references)};
-        return {workspace:w,item:await s.propose(w,{content:a.summary,kind:'checkpoint',metadata},actor),outcome:'proposed'};
+        return this.writeResult(w,await s.propose(w,{content:a.summary,kind:'checkpoint',metadata},actor,automatic));
       }
       case 'memory_resume': {
         const page=await s.page(w,{...a,kind:'checkpoint'}),checkpoints=[];
@@ -125,7 +128,7 @@ export class Service {
         ensure(a.basis!=='measured' || (a.observed_at && a.references.length),'RECORD','Measured records require observation date and local references.');
         const {workspace,statement,references,...metadata}=a;
         metadata.references=await this.references(w,references);metadata.contract=1;
-        return {workspace:w,item:await s.propose(w,{content:statement,kind:'record',metadata,valid_until:a.expires_at},actor),outcome:'proposed'};
+        return this.writeResult(w,await s.propose(w,{content:statement,kind:'record',metadata,valid_until:a.expires_at},actor,automatic));
       }
       case 'memory_project': {
         const page=await s.page(w,{...a,kind:'record'}),records=[],ambiguities=[],values=new Map();
@@ -142,9 +145,9 @@ export class Service {
         const sources=await s.eligible(w,a.ids);ensure(sources.length===a.ids.length,'STATE','Consolidation requires eligible sources.');
         ensure(Buffer.byteLength(sources.map(x=>x.content).join('\n\n---\n\n'))<=262144,'LIMIT','Consolidation exceeds content limit.');
         const planHash=hash(JSON.stringify(sources.map(x=>({id:x.id,content_hash:x.content_hash,node:x.node}))));
-        if(a.dry_run) return {workspace:w,plan_hash:planHash,sources,review_required:true};
+        if(a.dry_run) return {workspace:w,plan_hash:planHash,sources,review_required:!automatic};
         ensure(a.plan_hash===planHash,'PLAN','Consolidation requires its unchanged preview hash.');
-        return {workspace:w,item:await s.consolidate(w,a.ids,planHash,actor),outcome:'proposed'};
+        return this.writeResult(w,await s.consolidate(w,a.ids,planHash,actor,automatic));
       }
       case 'memory_stats':return {workspace:w,...await s.stats(w),thresholds:this.config.thresholds};
       case 'memory_doctor':return {workspace:w,...await s.health(),...await s.stats(w),storage:this.config.s3 ? 'configured_not_probed':'not_configured',provider:'not_probed'};

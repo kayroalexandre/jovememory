@@ -36,7 +36,7 @@ export class Store {
       return r.rows[0] || (await c.query('SELECT * FROM nodes WHERE workspace=$1 AND id=$2',[workspace,id])).rows[0];
     });
   }
-  async create(c, workspace, input, actor) {
+  async create(c, workspace, input, actor, automatic=false) {
     const id=input.id || randomUUID(); const digest=hash(input.content);
     const existing=await c.query('SELECT id FROM items WHERE workspace=$1 AND (id=$2 OR (content_hash=$3 AND status=\'rejected\'))',[workspace,id,digest]);
     ensure(!existing.rowCount,'EXISTS','ID already exists or identical content was rejected.');
@@ -44,9 +44,13 @@ export class Store {
       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,[workspace,id,input.node || null,input.content,digest,
       input.kind || 'note',input.metadata || {},actor,input.supersedes || null,input.valid_from || null,input.valid_until || null]);
     await this.audit(c,workspace,'propose',actor,id,{item:clean(r.rows[0]),gate:input.gate || null});
+    if(automatic) {
+      await this.reviewInTransaction(c,workspace,id,true,'Automatic activation under the configured write policy.','system:auto',true);
+      return clean((await c.query('SELECT * FROM items WHERE workspace=$1 AND id=$2',[workspace,id])).rows[0]);
+    }
     return clean(r.rows[0]);
   }
-  async propose(workspace,input,actor) { return this.transaction(workspace,c=>this.create(c,workspace,input,actor)); }
+  async propose(workspace,input,actor,automatic=false) { return this.transaction(workspace,c=>this.create(c,workspace,input,actor,automatic)); }
   async read(workspace,id) {
     return this.transaction(workspace,async c=>{
       const item=clean((await c.query('SELECT * FROM items WHERE workspace=$1 AND id=$2',[workspace,id])).rows[0]);
@@ -75,29 +79,30 @@ export class Store {
     });
   }
   async review(workspace,id,accept,reason,actor) {
-    return this.transaction(workspace,async c=>{
-      const proposal=(await c.query('SELECT * FROM items WHERE workspace=$1 AND id=$2 FOR UPDATE',[workspace,id])).rows[0];
-      ensure(proposal?.status==='proposed','STATE','Only a pending proposal can be reviewed.');
-      ensure(proposal.proposer!==actor,'REVIEW','A different profile must review the proposal.');
-      const sourceIds=proposal.metadata.consolidation?.sources.map(s=>s.id) || (proposal.supersedes ? [proposal.supersedes]:[]);
-      if(accept && sourceIds.length) {
-        const sources=(await c.query('SELECT * FROM items WHERE workspace=$1 AND id=ANY($2::uuid[]) ORDER BY id FOR UPDATE',[workspace,sourceIds])).rows;
-        ensure(sources.length===sourceIds.length && sources.every(s=>s.status==='active' && (!s.valid_from || s.valid_from<=new Date()) && (!s.valid_until || s.valid_until>new Date())),'CONFLICT','Predecessors changed before review.');
-        if(proposal.metadata.consolidation) ensure(sources.every(s=>proposal.metadata.consolidation.sources.some(snapshot=>snapshot.id===s.id && snapshot.content_hash===s.content_hash && snapshot.node===s.node)),
-          'CONFLICT','Consolidation snapshots changed before review.');
-        await c.query("UPDATE items SET status='invalidated',reason=$3 WHERE workspace=$1 AND id=ANY($2::uuid[])",[workspace,sourceIds,reason]);
-      }
-      await c.query(`UPDATE items SET status=$3,reviewer=$4,reason=$5,content=CASE WHEN $3='rejected' THEN '' ELSE content END,
-        embedding=CASE WHEN $3='rejected' THEN NULL ELSE embedding END WHERE workspace=$1 AND id=$2`,[workspace,id,accept?'active':'rejected',actor,reason]);
-      await this.audit(c,workspace,accept?'accept':'reject',actor,id,{reason,before:clean(proposal),invalidated_ids:accept?sourceIds:[]});
-      return {id,status:accept?'active':'rejected',invalidated_ids:accept?sourceIds:[]};
-    });
+    return this.transaction(workspace,c=>this.reviewInTransaction(c,workspace,id,accept,reason,actor));
   }
-  async update(workspace,id,input,reason,actor) {
+  async reviewInTransaction(c,workspace,id,accept,reason,actor,automatic=false) {
+    const proposal=(await c.query('SELECT * FROM items WHERE workspace=$1 AND id=$2 FOR UPDATE',[workspace,id])).rows[0];
+    ensure(proposal?.status==='proposed','STATE','Only a pending proposal can be reviewed.');
+    ensure(proposal.proposer!==actor,'REVIEW','A different profile must review the proposal.');
+    const sourceIds=proposal.metadata.consolidation?.sources.map(s=>s.id) || (proposal.supersedes ? [proposal.supersedes]:[]);
+    if(accept && sourceIds.length) {
+      const sources=(await c.query('SELECT * FROM items WHERE workspace=$1 AND id=ANY($2::uuid[]) ORDER BY id FOR UPDATE',[workspace,sourceIds])).rows;
+      ensure(sources.length===sourceIds.length && sources.every(s=>s.status==='active' && (!s.valid_from || s.valid_from<=new Date()) && (!s.valid_until || s.valid_until>new Date())),'CONFLICT','Predecessors changed before review.');
+      if(proposal.metadata.consolidation) ensure(sources.every(s=>proposal.metadata.consolidation.sources.some(snapshot=>snapshot.id===s.id && snapshot.content_hash===s.content_hash && snapshot.node===s.node)),
+        'CONFLICT','Consolidation snapshots changed before review.');
+      await c.query("UPDATE items SET status='invalidated',reason=$3 WHERE workspace=$1 AND id=ANY($2::uuid[])",[workspace,sourceIds,reason]);
+    }
+    await c.query(`UPDATE items SET status=$3,reviewer=$4,reason=$5,content=CASE WHEN $3='rejected' THEN '' ELSE content END,
+      embedding=CASE WHEN $3='rejected' THEN NULL ELSE embedding END WHERE workspace=$1 AND id=$2`,[workspace,id,accept?'active':'rejected',actor,reason]);
+    await this.audit(c,workspace,accept?'accept':'reject',actor,id,{reason,automatic,before:clean(proposal),invalidated_ids:accept?sourceIds:[]});
+    return {id,status:accept?'active':'rejected',invalidated_ids:accept?sourceIds:[]};
+  }
+  async update(workspace,id,input,reason,actor,automatic=false) {
     return this.transaction(workspace,async c=>{
       const old=clean((await c.query('SELECT * FROM items WHERE workspace=$1 AND id=$2 FOR UPDATE',[workspace,id])).rows[0]);
       ensure(old?.status==='active','STATE','Only active items can be replaced.');
-      const proposal=await this.create(c,workspace,{...old,...input,id:undefined,supersedes:id},actor);
+      const proposal=await this.create(c,workspace,{...old,...input,id:undefined,supersedes:id},actor,automatic);
       await this.audit(c,workspace,'replacement',actor,proposal.id,{reason,predecessor:id});return proposal;
     });
   }
@@ -142,25 +147,25 @@ export class Store {
     });
   }
   async crossLinks(workspace) { return this.transaction(workspace,async c=>(await c.query('SELECT DISTINCT target_workspace,relation FROM links WHERE workspace=$1 AND target_workspace!=$1 ORDER BY target_workspace LIMIT 20',[workspace])).rows); }
-  async ingestion(workspace,plan,actor) {
+  async ingestion(workspace,plan,actor,automatic=false) {
     return this.transaction(workspace,async c=>{
       const results=[];
       for(const part of plan.sections) {
         const prior=await c.query("SELECT id,status FROM items WHERE workspace=$1 AND (id=$2 OR (content_hash=$3 AND status='rejected'))",[workspace,part.id,hash(part.content)]);
         if(prior.rowCount) {results.push({...prior.rows[0],skipped:true});continue;}
         await c.query('INSERT INTO nodes(workspace,id,label) VALUES($1,$2,$2) ON CONFLICT DO NOTHING',[workspace,part.source]);
-        results.push(await this.create(c,workspace,{...part,node:part.source,metadata:{source:part.source,plan_hash:plan.plan_hash}},actor));
+        results.push(await this.create(c,workspace,{...part,node:part.source,metadata:{source:part.source,plan_hash:plan.plan_hash}},actor,automatic));
       }
       return {complete:true,results};
     });
   }
-  async consolidate(workspace,ids,planHash,actor) {
+  async consolidate(workspace,ids,planHash,actor,automatic=false) {
     return this.transaction(workspace,async c=>{
       const sources=await this.eligible(workspace,ids,new Date().toISOString(),c);
       ensure(sources.length===ids.length,'STATE','Consolidation requires active sources.');
       const digest=hash(JSON.stringify(sources.map(s=>({id:s.id,content_hash:s.content_hash,node:s.node}))));
       ensure(digest===planHash,'PLAN','Consolidation preview changed.');
-      return this.create(c,workspace,{content:sources.map(s=>s.content).join('\n\n---\n\n'),kind:'consolidation',metadata:{consolidation:{plan_hash:digest,sources}}},actor);
+      return this.create(c,workspace,{content:sources.map(s=>s.content).join('\n\n---\n\n'),kind:'consolidation',metadata:{consolidation:{plan_hash:digest,sources}}},actor,automatic);
     });
   }
   async addMedia(workspace,data,actor) { return this.transaction(workspace,async c=>{

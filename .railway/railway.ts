@@ -29,7 +29,7 @@ export default defineRailway(() => {
       NODE_ENV: 'production', HOST: '0.0.0.0', PORT: '3000',
       PUBLIC_URL: 'https://${{RAILWAY_PUBLIC_DOMAIN}}',
       MIGRATION_DATABASE_URL: db.env.DATABASE_URL_PRIVATE,
-      AUTH_PROFILES: preserve(), ENABLE_PROVIDER: 'false',
+      AUTH_PROFILES: preserve(), ENABLE_PROVIDER: 'false', MEMORY_REVIEW_MODE: 'automatic',
       S3_ENDPOINT: '${{Media.ENDPOINT}}', S3_BUCKET: '${{Media.BUCKET}}', S3_REGION: 'auto',
       S3_ACCESS_KEY_ID: '${{Media.ACCESS_KEY_ID}}', S3_SECRET_ACCESS_KEY: '${{Media.SECRET_ACCESS_KEY}}',
     },

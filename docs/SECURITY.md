@@ -14,7 +14,7 @@ No local, `.env` tem modo 600 e `private/` modo 700; arquivos de token têm modo
 
 ## Fronteiras de confiança
 
-`reader` lê; `writer` propõe e registra feedback; `reviewer` aceita/rejeita e faz soft delete; `admin` provisiona relações/indexação e pode usar outras operações. Toda ferramenta verifica permissão e workspace; o catálogo só anuncia operações permitidas ao perfil. Consolidação/atualização nunca substituem fontes antes da revisão. Não entregue credencial de revisão ou administração a um agente que deve somente propor.
+`reader` lê; `writer` grava e registra feedback; `reviewer` revisa propostas pendentes e faz soft delete; `admin` provisiona relações/indexação e pode usar outras operações. Toda ferramenta verifica permissão e workspace; o catálogo só anuncia operações permitidas ao perfil. No modo automático padrão, o serviço ativa as escritas sem dar ao cliente acesso a revisão/administração. Atualização/consolidação validam e substituem fontes atomicamente, conservando versões e auditoria. No modo manual opcional, fontes só são substituídas após revisão por outro perfil. Não entregue credencial de revisão ou administração a agentes que precisam apenas gravar.
 
 O HTTP exige Bearer token e valida Host/Origin. Não há CORS aberto, cookies, formulário HTML ou segredos em URL. `/health` só informa disponibilidade genérica. A aplicação não loga corpo, cabeçalhos Authorization, SQL privado ou erros brutos de provedor. Respostas de erro são categorias genéricas. Métodos de sessão GET/DELETE não se aplicam ao HTTP stateless e recebem 405.
 
