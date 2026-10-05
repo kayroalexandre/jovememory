@@ -2,11 +2,11 @@
 
 ## Implementado
 
-32 ferramentas MCP, incluindo os 28 objetivos funcionais catalogados da aplicação anterior, com mudanças explícitas em PARITY.md. Código/configuração novos. HTTP autenticado e stdio com SDK oficial; persistência PostgreSQL/pgvector isolada por RLS; mídia S3 privada; ativação automática/histórico/consolidação e modo manual opcional; continuidade/registros; avaliação; snapshot/restore; ambiente de desenvolvimento próprio.
+33 ferramentas MCP, incluindo os 28 objetivos funcionais catalogados da aplicação anterior, com mudanças explícitas em PARITY.md. Código/configuração novos. HTTP autenticado e stdio com SDK oficial; persistência PostgreSQL/pgvector isolada por RLS; mídia S3 privada; ativação automática/histórico/consolidação e modo manual opcional; continuidade/registros; avaliação; snapshot/restore; ambiente de desenvolvimento próprio.
 
 ## Verificado localmente
 
-Versão 0.2.0: syntax/version, scanner público, 16 testes unitários e 18 cenários de integração (19 resultados TAP incluindo o teste principal), com todos os 32 nomes exercitados. Clientes MCP reais por HTTP/stdio, role runtime sem superuser/BYPASSRLS, autenticação/permissões/origin, concorrência de revisão e integridade/restauração de snapshot com mídia. Cobertura nova: ativação automática em todos os caminhos de escrita, recuperação imediata, checkpoint/registro, substituição concorrente, consolidação, validade temporal, gate opcional e rollback completo de conteúdo/auditoria. O modo manual foi testado separadamente. Dependências: auditoria npm sem vulnerabilidade conhecida na consulta desta entrega.
+Versão 0.3.0: syntax/version, scanner público, 17 testes unitários e 19 cenários de integração (20 resultados TAP incluindo o teste principal), com todos os 33 nomes exercitados. Clientes MCP reais por HTTP/stdio, role runtime sem superuser/BYPASSRLS, autenticação/permissões/origin, concorrência de revisão e integridade/restauração de snapshot com mídia. Cobertura nova: ativação automática em todos os caminhos de escrita, recuperação imediata, checkpoint/registro, substituição concorrente, consolidação, validade temporal, gate opcional e rollback completo de conteúdo/auditoria. O modo manual foi testado separadamente. Dependências: auditoria npm sem vulnerabilidade conhecida na consulta desta entrega.
 
 Nesta reconciliação não houve importação de corpus pessoal ou dados antigos. O primeiro smoke remoto recusou embedding por ausência de chave no processo. O operador cadastrou as chaves em armazenamento externo/variáveis privadas. A conexão local foi ativada e passou por chamadas reais de embeddings, decisão, análise e rerank. `.env` e `private/` contêm somente configuração nova da instalação local e são ignorados pelo Git.
 
@@ -33,3 +33,9 @@ Qualidade de corpus real, capacidade multimodal de um modelo específico, custo/
 A instalação anterior foi retirada por solicitação explícita do operador, sem importar seu corpus. Checkout/histórico Git local, dados, backups, credenciais locais, contêineres, volumes e caches identificados foram removidos. Registros locais dos clientes apontam para esta instalação nova. O repositório remoto anterior não está mais disponível; esta entrega continua sem corpus antigo.
 
 O gate inicial no GitHub identificou uma imagem MinIO indisponível em runner sem cache. O S3 local foi substituído por SeaweedFS público com digest fixo, em volume novo, e a integração completa foi repetida. A produção continua usando Bucket nativo.
+
+## Agente principal — versão 0.3.0
+
+Inferência generativa é seletiva: contexto sem síntese, notas sem enriquecimento e consolidação sem resumo auxiliar por padrão. O agente pode solicitar essas funções quando úteis, sem aprovação humana. Embeddings automáticos, decisão indicativa e rerank padrão permanecem ativos. Testes verificam ausência das chamadas generativas redundantes, solicitação explícita, invalidação de análise da versão anterior, referências/orçamento e persistência integral.
+
+Provisionamento administrativo de workspace via MCP é idempotente, auditado e restrito por perfil/nome. Novos perfis podem ser acrescentados em `EXTRA_AUTH_PROFILES` sem substituir a base. Migration 002 aplicada no ambiente local; autorização e RLS entre workspaces foram verificadas em Compose isolado. Banco físico separado por projeto não é parte desta topologia. Associação privada de cliente e histórico de sessões reais não são garantidos pela existência destas funções.

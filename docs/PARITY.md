@@ -17,7 +17,7 @@ Esta é uma reconstrução, com schema e transporte novos. O catálogo anterior 
 | Continuidade | `memory_context`, `memory_checkpoint`, `memory_resume` | Pacote limitado em bytes, checkpoints ativos automaticamente e referências relidas com hash/eligibilidade |
 | Estado de projeto | `memory_record`, `memory_project` | Tipos goal/decision/constraint/evidence/issue/procedure; basis e autoridade declaradas; medição exige data/referências; ambiguidades de valores ativos |
 
-São 28 nomes reconstruídos. As quatro adições são `memory_create_node`, `memory_link`, `memory_index` e `memory_read_media`. Não há ferramentas anunciadas sem dispatch correspondente. Integração exercita os 32 nomes, com autorização real e persistência; caminhos de modelo são simulados, não medições pagas.
+São 28 nomes reconstruídos. As cinco adições são `memory_create_workspace`, `memory_create_node`, `memory_link`, `memory_index` e `memory_read_media`. Não há ferramentas anunciadas sem dispatch correspondente. Integração exercita os 33 nomes, com autorização real e persistência; caminhos de modelo são simulados, não medições pagas.
 
 ## Mudanças deliberadas
 
@@ -37,3 +37,9 @@ São 28 nomes reconstruídos. As quatro adições são `memory_create_node`, `me
 Medidas de qualidade, corpus, calibração, chaves/modelos específicos, workspaces pessoais, configuração de clientes e estado operacional da instalação anterior não são defaults do novo projeto. Não houve importação de dados ou troca dos clientes antigos. Métricas antigas não certificam a qualidade deste código/corpus.
 
 A avaliação nova suporta Precision/Recall/Hit@10, MRR, consultas negativas e calibração com treino/holdout. A operação mantém os objetivos de diagnosticar, indexar backlog, fazer backup e testar restauração, usando comandos próprios. Consulte [EVALUATION.md](EVALUATION.md) e [OPERATIONS.md](OPERATIONS.md).
+
+## Contrato 0.3.0
+
+`memory_create_workspace` exige perfil administrativo autorizado ao nome solicitado, não admite conteúdo e registra uma única criação auditada. Credenciais por projeto podem ser adicionadas por `EXTRA_AUTH_PROFILES` sem substituir `AUTH_PROFILES`; IDs e hashes duplicados impedem inicialização. A migration 002 libera somente INSERT no registro de workspaces para a role runtime; conteúdo continua nas transações RLS.
+
+Inferência é apoio explícito ao agente: `synthesize`, `enrich` e `summarize` são falsos por padrão. Embeddings e rerank permanecem automáticos; `memory_write` e `memory_update_item` usam decisão indicativa. Atualização remove análise auxiliar da versão anterior para não reapresentá-la como análise do novo conteúdo. Síntese fornece evidência compactada e citações, preservando IDs/hash do original; conteúdo cortado declara `content_truncated` e `content_bytes`, e a releitura integral continua disponível por ID. Consolidação preserva textos integrais mesmo quando produz resumo auxiliar.

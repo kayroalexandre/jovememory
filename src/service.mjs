@@ -93,9 +93,19 @@ export class Service {
     return {workspace:a.workspace,results,as_of:asOf,degraded,thresholds:this.config.thresholds,evidence:{...evidence,retrieval_incomplete:degraded.length>0},
       lexical_engine:'postgresql_portuguese_fts',vector_engine:'pgvector_exact',vector_similarity_floor:null};
   }
+  async evaluateWrite(workspace,input) {
+    let gate={status:'skipped',threshold:this.config.thresholds.write,calibrated:false,probability_calibrated:false,probability_source:'model',model:this.config.provider.decisionModel};
+    let enrichment={status:'skipped',model:this.config.provider.knowledgeModel};
+    try {const score=await this.provider.decision({workspace,content:input.content},'Is this durable knowledge worth retaining, such as an explicit fact, decision, preference, constraint or procedure?');gate={...gate,status:score>=gate.threshold?'recommended':'below_threshold',score};}
+    catch {gate.status='unavailable';}
+    if(input.enrich) try {enrichment={status:'available',...await this.provider.extract(input.content)};enrichment.fallback=enrichment.model!==this.config.provider.knowledgeModel;} catch {enrichment.status='unavailable';}
+    const metadata=enrichment.status==='available' ? {model_analysis:{summary:enrichment.summary,keywords:enrichment.keywords,entities:enrichment.entities,model:enrichment.model}} : undefined;
+    return {gate,enrichment,metadata};
+  }
   async dispatch(name,a,p) {
     const s=this.store,w=a.workspace,actor=p.id,automatic=this.config.reviewMode==='automatic';
     switch(name) {
+      case 'memory_create_workspace':return s.workspace(w,actor);
       case 'memory_version': return {name:'jovememory',version:VERSION,workspaces:(await s.workspaces()).filter(x=>p.workspaces.includes('*') || p.workspaces.includes(x)),evidence};
       case 'memory_capabilities': return {...publicConfig(this.config),profile:{id:actor,role:p.role,workspaces:p.workspaces},tools:this.available(p).map(t=>t.name),review:automatic?'automatic':'separate_profile_required',transports:['stdio','streamable-http']};
       case 'memory_search': return this.search(a);
@@ -104,17 +114,15 @@ export class Service {
       case 'memory_list': {const page=await s.page(w,a);return {workspace:w,...page,items:page.items.map(({content,metadata,...item})=>item)};}
       case 'memory_propose_write': return this.writeResult(w,await s.propose(w,a,actor,automatic));
       case 'memory_write': {
-        let gate={status:'skipped',threshold:this.config.thresholds.write,calibrated:false,probability_calibrated:false,probability_source:'model',model:this.config.provider.decisionModel};
-        let enrichment={status:'skipped',model:this.config.provider.knowledgeModel};
-        try {const score=await this.provider.decision({workspace:w,content:a.content},'Is this durable knowledge worth retaining, such as an explicit fact, decision, preference, constraint or procedure?');gate={...gate,status:score>=gate.threshold?'recommended':'below_threshold',score};}
-        catch {gate.status='unavailable';}
-        try {enrichment={status:'available',...await this.provider.extract(a.content)};enrichment.fallback=enrichment.model!==this.config.provider.knowledgeModel;} catch {enrichment.status='unavailable';}
-        const metadata=enrichment.status==='available' ? {model_analysis:{summary:enrichment.summary,keywords:enrichment.keywords,entities:enrichment.entities,model:enrichment.model}} : undefined;
+        const {gate,enrichment,metadata}=await this.evaluateWrite(w,a);
         return this.writeResult(w,await s.propose(w,{...a,gate,metadata},actor,automatic),{gate,enrichment});
       }
       case 'memory_review':return {workspace:w,...await s.review(w,a.id,a.action==='accept',a.reason,actor)};
       case 'memory_list_proposed':return {workspace:w,...await s.page(w,{...a,status:'proposed'})};
-      case 'memory_update_item':return this.writeResult(w,await s.update(w,a.id,{content:a.content,valid_from:a.valid_from,valid_until:a.valid_until},a.reason,actor,automatic));
+      case 'memory_update_item': {
+        const {gate,enrichment,metadata}=await this.evaluateWrite(w,a);
+        return this.writeResult(w,await s.update(w,a.id,{content:a.content,valid_from:a.valid_from,valid_until:a.valid_until,gate,metadata},a.reason,actor,automatic),{gate,enrichment});
+      }
       case 'memory_delete':return {workspace:w,...await s.mutate(w,a.id,'delete',actor,{reason:a.reason})};
       case 'memory_move_item':return {workspace:w,...await s.mutate(w,a.id,'move',actor,{node:a.node,reason:a.reason})};
       case 'memory_feedback':return {workspace:w,...await s.mutate(w,a.id,'feedback',actor,{useful:a.useful,reason:a.reason})};
@@ -134,13 +142,23 @@ export class Service {
             valid_from:item.valid_from,valid_until:item.valid_until,provenance:candidate.provenance,observed_at:new Date().toISOString()});
         }
         let synthesis=null;
-        if(results.length && this.config.provider.enabled) {
+        if(a.synthesize && results.length && this.config.provider.enabled) {
           try {
             synthesis=await this.provider.synthesize(a.query,results);
             if(synthesis.model!==this.config.provider.synthesisModel) search.degraded.push('synthesis_fallback');
             const maxSummaryChars=Math.max(256,Math.min(1600,Math.floor(a.max_bytes/4)));
             if(synthesis.summary.length>maxSummaryChars) synthesis={...synthesis,summary:synthesis.summary.slice(0,maxSummaryChars)+'...',truncated:true};
           } catch {search.degraded.push('synthesis_unavailable');}
+        }
+        if(synthesis) {
+          const perSource=Math.max(64,Math.min(1024,Math.floor(a.max_bytes/2/results.length)));
+          for(const item of results) {
+            const bytes=Buffer.byteLength(item.content);
+            if(bytes<=perSource) continue;
+            let excerpt='',used=0;
+            for(const character of item.content) {const size=Buffer.byteLength(character);if(used+size>perSource) break;excerpt+=character;used+=size;}
+            item.content=excerpt;item.content_truncated=true;item.content_bytes=bytes;
+          }
         }
         const base={workspace:w,results,gaps,as_of:search.as_of,evidence:{...search.evidence,retrieval_incomplete:search.degraded.length>0},degraded:search.degraded,thresholds:search.thresholds};
         let output;
@@ -193,10 +211,10 @@ export class Service {
         if(a.dry_run) return {workspace:w,plan_hash:planHash,sources,review_required:!automatic};
         ensure(a.plan_hash===planHash,'PLAN','Consolidation requires its unchanged preview hash.');
         let modelSummary=null; const degraded=[];
-        if(this.config.provider.enabled) {
+        if(a.summarize && this.config.provider.enabled) {
           try {modelSummary=await this.provider.consolidate(sources);if(modelSummary.model!==this.config.provider.knowledgeModel) degraded.push('consolidation_model_fallback');}
           catch {degraded.push('consolidation_model_unavailable');}
-        } else degraded.push('consolidation_model_disabled');
+        } else if(a.summarize) degraded.push('consolidation_model_disabled');
         return this.writeResult(w,await s.consolidate(w,a.ids,planHash,actor,automatic,modelSummary),{model_summary:modelSummary,degraded});
       }
       case 'memory_stats':return {workspace:w,...await s.stats(w),thresholds:this.config.thresholds};

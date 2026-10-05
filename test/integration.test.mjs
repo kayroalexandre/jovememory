@@ -37,6 +37,20 @@ test('Isolated database, object storage, MCP and backup lifecycle',async t=>{
     const call=async(name,args={},profile=writer)=>{const result=await service.call(name,args,profile);called.add(name);return result;};
     const accept=async id=>call('memory_review',{workspace:'synthetic-a',id,action:'accept',reason:'Synthetic test review'},reviewer);
     let itemId,otherId,sourceIds,mediaId;
+    await t.test('Workspace provisioning is scoped, idempotent and audited without admin database credentials',async()=>{
+      await assert.rejects(call('memory_create_workspace',{workspace:'synthetic-c'},writer),{code:'FORBIDDEN'});
+      await assert.rejects(call('memory_create_workspace',{workspace:'synthetic-c'},operator),{code:'FORBIDDEN'});
+      const provisioner={id:'synthetic-provisioner',role:'admin',workspaces:['synthetic-c']};
+      await Promise.all(Array.from({length:8},()=>call('memory_create_workspace',{workspace:'synthetic-c'},provisioner)));
+      await call('memory_create_workspace',{workspace:'synthetic-c'},provisioner);
+      assert.deepEqual((await store.stats('synthetic-c')).counts,[]);
+      const events=await store.mutations('synthetic-c',{limit:10});assert.equal(events.length,1);assert.equal(events[0].operation,'workspace_create');
+      const scoped={id:'synthetic-scoped',role:'writer',workspaces:['synthetic-c']};
+      const own=await call('memory_propose_write',{workspace:'synthetic-c',content:'Synthetic isolated project.'},scoped);
+      assert.equal((await call('memory_read',{workspace:'synthetic-c',id:own.item.id},scoped)).item.workspace,'synthetic-c');
+      await assert.rejects(call('memory_read',{workspace:'synthetic-a',id:own.item.id},scoped),{code:'FORBIDDEN'});
+      assert.equal((await call('memory_read',{workspace:'synthetic-a',id:own.item.id},reader)).item,null);
+    });
     await t.test('RLS prevents cross-workspace reads even without WHERE, and cannot alter audit',async()=>{
       await call('memory_propose_write',{workspace:'synthetic-b',content:'Isolated private synthetic value'},operator);
       const client=new pg.Client({connectionString:appUrl});await client.connect();
@@ -150,7 +164,7 @@ test('Isolated database, object storage, MCP and backup lifecycle',async t=>{
       assert.equal((await mocked.call('memory_cross_workspace',{workspace:'synthetic-a',query:'synthetic'},operator)).traversal[0].status,'traversed');
     });
     await t.test('Diagnostics, audit and scoped catalog do not reveal credentials',async()=>{
-      await call('memory_stats',{workspace:'synthetic-a'},reader);assert.equal((await call('memory_doctor',{workspace:'synthetic-a'},reader)).schema,1);
+      await call('memory_stats',{workspace:'synthetic-a'},reader);assert.equal((await call('memory_doctor',{workspace:'synthetic-a'},reader)).schema,2);
       assert.ok((await call('memory_mutations',{workspace:'synthetic-a',id:itemId},reader)).mutations.length>0);
       assert.deepEqual((await call('memory_version',{},reader)).workspaces,['synthetic-a']);
       const capabilities=await call('memory_capabilities',{},reader);assert.ok(!capabilities.tools.includes('memory_review'));
@@ -269,23 +283,36 @@ test('Isolated database, object storage, MCP and backup lifecycle',async t=>{
         extract:async()=>{calls.push(['knowledge']);return {model:'synthetic-knowledge',summary:'Auxiliary analysis',keywords:[],entities:[]};},
         rerank:async(query,items)=>{calls.push(['rerank']);return {model:'synthetic-rerank',scores:new Map(items.map(x=>[x.id,0.9]))};},
         synthesize:async(query,items)=>{calls.push(['synthesis']);return {model:'synthetic-synthesis',summary:'Auxiliary context',cited_ids:items.map(x=>x.id)};},
-        consolidate:async sources=>({model:'synthetic-knowledge',summary:'Auxiliary consolidation',source_ids:sources.map(x=>x.id)})
+        consolidate:async sources=>{calls.push(['consolidation']);return {model:'synthetic-knowledge',summary:'Auxiliary consolidation',source_ids:sources.map(x=>x.id)};}
       };
       const enabled={...c,reviewMode:'automatic',provider:{...c.provider,enabled:true,dimensions:3,embeddingModel:'synthetic-model'}};
       const service=new Service(store,enabled,{provider});const auto=(name,args)=>service.call(name,{workspace:w,...args},profile);
-      const first=await auto('memory_write',{content:'Synthetic modelflow cobalt observatory.'});
+      const first=await auto('memory_write',{content:'Synthetic modelflow cobalt observatory.',enrich:true});
       assert.equal(first.indexing[0].status,'indexed');assert.equal(first.gate.probability_calibrated,false);
       assert.equal(first.item.metadata.model_analysis.model,'synthetic-knowledge');
       const search=await auto('memory_search',{query:'modelflow'});
       assert.ok(search.results.some(x=>x.id===first.item.id&&x.provenance.includes('semantic')));
       assert.ok(search.results.every(x=>x.rerank_model==='synthetic-rerank'));
       const before=calls.length;await auto('memory_search',{query:'modelflow',rerank:false});assert.ok(!calls.slice(before).some(x=>x[0]==='rerank'));
-      const context=await auto('memory_context',{query:'modelflow',max_bytes:262144});assert.equal(context.synthesis.model,'synthetic-synthesis');
+      const inferenceCount=calls.filter(x=>x[0]==='synthesis').length;
+      const evidenceOnly=await auto('memory_context',{query:'modelflow',max_bytes:262144});
+      assert.equal(evidenceOnly.synthesis,null);assert.equal(calls.filter(x=>x[0]==='synthesis').length,inferenceCount);
+      const context=await auto('memory_context',{query:'modelflow',max_bytes:262144,synthesize:true});assert.equal(context.synthesis.model,'synthetic-synthesis');
       provider.synthesize=async(query,items)=>({model:'synthetic-synthesis',summary:'Synthetic context '.repeat(200),cited_ids:items.map(x=>x.id)});
-      const small=await auto('memory_context',{query:'modelflow',max_bytes:1024});assert.ok(Buffer.byteLength(JSON.stringify(small))<=1024);
+      const small=await auto('memory_context',{query:'modelflow',max_bytes:1024,synthesize:true});assert.ok(Buffer.byteLength(JSON.stringify(small))<=1024);
       assert.ok(!small.synthesis || small.synthesis.cited_ids.every(id=>small.results.some(x=>x.id===id)));
+      const fullContent='Synthetic compactprobe evidência íntegra 🛰️. '.repeat(1000);
+      const large=await auto('memory_propose_write',{content:fullContent});
+      provider.synthesize=async(query,items)=>({model:'synthetic-synthesis',summary:'Compact synthetic evidence for the caller.',cited_ids:items.map(x=>x.id)});
+      const compact=await auto('memory_context',{query:'compactprobe',limit:1,max_bytes:4096,synthesize:true});
+      assert.equal(compact.results[0].id,large.item.id);assert.ok(compact.synthesis);
+      assert.equal(compact.results[0].content_truncated,true);assert.equal(compact.results[0].content_bytes,Buffer.byteLength(fullContent));
+      assert.equal(compact.results[0].content_hash,hash(fullContent));assert.ok(fullContent.startsWith(compact.results[0].content));
+      assert.ok(Buffer.byteLength(JSON.stringify(compact))<=4096);assert.ok(compact.bytes_used<Buffer.byteLength(fullContent));
+      assert.equal((await auto('memory_read',{id:large.item.id})).item.content,fullContent);
       const replacement=await auto('memory_update_item',{id:first.item.id,content:'Updated synthetic modelflow observatory.',reason:'Synthetic revision'});
       assert.equal(replacement.indexing[0].status,'indexed');assert.equal((await store.read(w,first.item.id)).status,'invalidated');
+      assert.equal(replacement.enrichment.status,'skipped');assert.equal(replacement.item.metadata.model_analysis,undefined);assert.equal(replacement.gate.score,0.8);
       const checkpoint=await auto('memory_checkpoint',{session:'model-test',title:'Synthetic',summary:'Synthetic checkpoint modelflow.'});assert.equal(checkpoint.indexing[0].status,'indexed');
       const record=await auto('memory_record',{kind:'decision',key:'model-test',title:'Synthetic',statement:'Synthetic record modelflow.',basis:'asserted'});assert.equal(record.indexing[0].status,'indexed');
       const input={source:'docs/models.md',content:'# Models\nSynthetic ingestion modelflow.'};const plan=await auto('memory_ingest_markdown',input);
@@ -293,13 +320,20 @@ test('Isolated database, object storage, MCP and backup lifecycle',async t=>{
       const n=calls.length;await auto('memory_ingest_markdown',{...input,dry_run:false,plan_hash:plan.plan_hash});assert.equal(calls.length,n);
       const proposal=await auto('memory_propose_write',{content:'Synthetic second source modelflow.'});assert.equal(proposal.indexing[0].status,'indexed');
       const mergePlan=await auto('memory_consolidate',{ids:[replacement.item.id,proposal.item.id]});
-      const merge=await auto('memory_consolidate',{ids:[replacement.item.id,proposal.item.id],dry_run:false,plan_hash:mergePlan.plan_hash});
+      const merge=await auto('memory_consolidate',{ids:[replacement.item.id,proposal.item.id],dry_run:false,plan_hash:mergePlan.plan_hash,summarize:true});
       assert.equal(merge.indexing[0].status,'indexed');assert.equal(merge.model_summary.model,'synthetic-knowledge');assert.ok(merge.item.content.includes(proposal.item.content));
+      const summaryCalls=calls.filter(x=>x[0]==='consolidation').length;
+      const defaultPlan=await auto('memory_consolidate',{ids:[merge.item.id,large.item.id]});
+      const defaultMerge=await auto('memory_consolidate',{ids:[merge.item.id,large.item.id],dry_run:false,plan_hash:defaultPlan.plan_hash});
+      assert.equal(defaultMerge.model_summary,null);assert.equal(calls.filter(x=>x[0]==='consolidation').length,summaryCalls);
+      assert.ok(defaultMerge.item.content.includes(fullContent));
       const manual=new Service(store,{...enabled,reviewMode:'manual'},{provider});const oldCalls=calls.length;
       const pending=await manual.call('memory_propose_write',{workspace:w,content:'Synthetic pending modelflow.'},profile);assert.equal(calls.length,oldCalls);
       const accepted=await manual.call('memory_review',{workspace:w,id:pending.item.id,action:'accept',reason:'Synthetic independent review'},{id:'model-reviewer',role:'reviewer',workspaces:[w]});assert.equal(accepted.indexing[0].status,'indexed');
       const unavailable=new Service(store,enabled,{provider:{...provider,embed:async()=>{throw new Error('synthetic');}}});
+      const modelCallsBefore=calls.filter(x=>x[0]==='knowledge').length;
       const saved=await unavailable.call('memory_write',{workspace:w,content:'Synthetic outage modelflow.'},profile);
+      assert.equal(calls.filter(x=>x[0]==='knowledge').length,modelCallsBefore);assert.equal(saved.enrichment.status,'skipped');
       assert.equal(saved.item.status,'active');assert.deepEqual(saved.degraded,['semantic_index_unavailable']);assert.equal(saved.indexing[0].status,'unavailable');
       const expired=await auto('memory_propose_write',{content:'Synthetic expired modelflow.',valid_until:'2000-01-01T00:00:00Z'});assert.equal(expired.indexing[0].status,'ineligible');
       const audit=await store.mutations(w,{id:replacement.item.id,limit:20});assert.ok(audit.some(x=>x.operation==='embed'&&x.actor===profile.id));
@@ -322,7 +356,7 @@ test('Isolated database, object storage, MCP and backup lifecycle',async t=>{
       assert.equal((await call('memory_search_media',{workspace:'synthetic-a',query:'cobalt transcript'},reader)).results.length,0);
       await assert.rejects(call('memory_read_media',{workspace:'synthetic-a',id:mediaId},reader),{code:'MEDIA'});
     });
-    assert.equal(called.size,32,`Missing tools: ${Object.keys((await import('../src/schemas.mjs')).TOOLS).filter(x=>!called.has(x))}`);
+    assert.equal(called.size,33,`Missing tools: ${Object.keys((await import('../src/schemas.mjs')).TOOLS).filter(x=>!called.has(x))}`);
   } finally {
     if(server) {server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
     await store?.close();

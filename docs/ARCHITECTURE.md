@@ -45,3 +45,11 @@ A camada de modelos é roteada por função, não por um único modelo genérico
 Fontes oficiais consultadas para esta topologia: [Railpack](https://docs.railway.com/builds/railpack), [Infrastructure as Code](https://docs.railway.com/infrastructure-as-code), [pgvector](https://docs.railway.com/guides/rag-pipeline-pgvector), [Buckets privados](https://docs.railway.com/storage-buckets), [SDK MCP](https://ts.sdk.modelcontextprotocol.io/server) e [embeddings OpenRouter](https://openrouter.ai/docs/api/api-reference/embeddings/create-embeddings).
 
 Baseline de desenvolvimento/produção preparado: PostgreSQL 17 com pgvector, com a mesma imagem fixada por digest; SeaweedFS local e Bucket Railway em produção usam o mesmo contrato S3. O [quick start oficial do SeaweedFS](https://github.com/seaweedfs/seaweedfs/blob/master/README.md) documenta o modo mini e autenticação por ambiente.
+
+## Apoio ao agente e organização de projetos
+
+O modelo do agente é o responsável pela tarefa e resposta. O servidor oferece recuperação híbrida, proveniência, controle de bytes e persistência; não assume planejamento ou execução do cliente. Embeddings e rerank permanecem ativos por padrão com provedor habilitado. Decisão avalia criação/atualização de notas e travessias explícitas; seus scores são indicativos e não calibrados. Registros estruturados e checkpoints fornecidos pelo agente não exigem reanálise generativa.
+
+Enriquecimento de notas/atualizações (`enrich:true`), síntese de contexto (`synthesize:true`) e resumo de consolidação (`summarize:true`) são solicitações técnicas opcionais do agente, sem confirmação humana adicional. Os defaults dispensam essas chamadas. A síntese comprime evidências sem responder à tarefa; trechos cortados declaram truncamento, conservam hash/ID do original e podem ser relidos integralmente. A validação de citações e orçamento continua obrigatória.
+
+Um projeto recebe nome de workspace explícito e perfil limitado a ele; associação ao diretório é configuração privada do cliente, não inferência do nome de uma consulta. O banco PostgreSQL é único, com isolamento lógico por RLS, não um banco físico para cada projeto. Provisionamento administrativo via MCP é idempotente e auditado. `EXTRA_AUTH_PROFILES` acrescenta perfis sem substituir credenciais existentes; autorização continua separada da criação do workspace.

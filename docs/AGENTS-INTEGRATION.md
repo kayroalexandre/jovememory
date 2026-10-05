@@ -25,3 +25,15 @@ Lista vazia não comprova ausência. Falha semântica/cross-workspace deve ser r
 Ingestão recebe conteúdo e paths relativos `.md`; não abre arquivos no servidor. Primeiro envie `dry_run:true`, confira as seções, repita conteúdo com `dry_run:false` e `plan_hash` idêntico. Essa prévia técnica pode ser executada pelo cliente, sem aprovação humana. No modo automático, todas as seções novas são ativadas na transação; conteúdo idêntico/rejeitado não é sobrescrito. Não envie segredos ou corpus de outro workspace para medir o sistema.
 
 Uma nova memória nunca sobrescreve um ID. Para corrigir, `memory_update_item` cria sucessor com motivo e, no modo automático, ativa a nova versão e invalida a anterior na mesma transação. Consolidação exige preview/hash e conserva textos/fontes completos. Delete é soft delete, não purga de snapshots/auditoria. Escritas retornam `review_required` e `outcome`; não peça aprovação de memória quando a política for automática.
+
+## Agente principal e uso seletivo da inferência
+
+O agente interpreta a solicitação, escolhe caminhos e responde ao usuário. Use `memory_resume`, `memory_project` e `memory_context` para consultar evidências; embeddings/rerank continuam ativos com o provedor. Por padrão, contexto não gera resumo e escrita não refaz a análise generativa do agente.
+
+Solicite `memory_context(synthesize:true)` quando várias fontes longas exigirem compactação para o orçamento do agente. A saída é evidência resumida, nunca resposta final ou autorização. `content_truncated:true` marca trechos; `content_hash` identifica o original integral, acessível por `memory_read`. Solicite `enrich:true` em `memory_write`/`memory_update_item` somente para conteúdo bruto que precise de estrutura auxiliar. Use `memory_consolidate(summarize:true)` para resumo adicional de manutenção; a consolidação integral não depende dele. Essas escolhas são feitas automaticamente pelo agente conforme a tarefa, sem pedir aprovação humana. Inferência não prova qualidade, frescor nem verdade.
+
+## Associação de projetos
+
+Provisione o workspace por `memory_create_workspace` com perfil administrativo autorizado. O resultado é idempotente e não cria memórias nem amplia permissões. Configure para cada projeto um perfil `writer` limitado ao seu workspace; grave o token em arquivo privado fora do checkout e use referência de arquivo do cliente. Associe o diretório ao nome explícito em instruções privadas e confirme o perfil efetivo por `memory_capabilities`. Nunca use outro workspace como destino improvisado para um projeto ainda não provisionado.
+
+A credencial cotidiana não cria workspaces nem administra outros projetos. Conteúdo de conversas e arquivos só é persistido quando o agente chama a API: uma conexão MCP não importa retroativamente o histórico da sessão. Nós, links, registros tipados, referências e checkpoints oferecem organização, mas precisam ser alimentados com contexto pertinente pelo agente.

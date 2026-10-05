@@ -29,7 +29,7 @@ export default defineRailway(() => {
       NODE_ENV: 'production', HOST: '0.0.0.0', PORT: '3000',
       PUBLIC_URL: 'https://${{RAILWAY_PUBLIC_DOMAIN}}',
       MIGRATION_DATABASE_URL: db.env.DATABASE_URL_PRIVATE,
-      AUTH_PROFILES: preserve(), ENABLE_PROVIDER: preserve(), MEMORY_REVIEW_MODE: 'automatic',
+      AUTH_PROFILES: preserve(), EXTRA_AUTH_PROFILES: preserve(), ENABLE_PROVIDER: preserve(), MEMORY_REVIEW_MODE: 'automatic',
       OPENROUTER_API_KEY: preserve(), OPENROUTER_BASE_URL: 'https://openrouter.ai/api/v1',
       OPENROUTER_DECISIONS_URL: 'https://openrouter.ai/api/alpha/decisions',
       EMBEDDING_MODEL: 'google/gemini-embedding-2', EMBEDDING_DIMENSIONS: '1536',

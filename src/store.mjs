@@ -11,20 +11,31 @@ export class Store {
     const role=(await this.pool.query('SELECT rolsuper,rolbypassrls FROM pg_roles WHERE rolname=current_user')).rows[0];
     ensure(role && !role.rolsuper && !role.rolbypassrls,'CONFIG','Runtime must use a non-administrative database role.');
     const result=await this.pool.query("SELECT name FROM schema_migrations ORDER BY name");
-    ensure(result.rows.at(-1)?.name==='001.sql','SCHEMA','Run the declared migrations before starting.');
-    return {schema:1,database:'ready'};
+    ensure(result.rows.at(-1)?.name==='002.sql','SCHEMA','Run the declared migrations before starting.');
+    return {schema:2,database:'ready'};
   }
   async workspaces() { return (await this.pool.query('SELECT name FROM workspaces ORDER BY name')).rows.map(r=>r.name); }
-  async transaction(workspace, fn) {
+  async transaction(workspace, fn, {create=false}={}) {
     const client=await this.pool.connect();
     try {
       await client.query('BEGIN');
       await client.query('SET LOCAL ROLE jovememory_app');
       await client.query("SELECT set_config('app.workspace',$1,true)",[workspace]);
+      if(create) {
+        await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[workspace]);
+        await client.query('INSERT INTO workspaces(name) VALUES($1) ON CONFLICT DO NOTHING',[workspace]);
+      }
       const exists=await client.query('SELECT name FROM workspaces WHERE name=$1',[workspace]);
       ensure(exists.rowCount,'WORKSPACE','Workspace has not been provisioned.');
       const result=await fn(client); await client.query('COMMIT'); return result;
     } catch(error) { await client.query('ROLLBACK'); throw error; } finally {client.release();}
+  }
+  async workspace(workspace,actor) {
+    return this.transaction(workspace,async c=>{
+      const prior=await c.query("SELECT 1 FROM audit WHERE workspace=$1 AND operation='workspace_create' LIMIT 1",[workspace]);
+      if(!prior.rowCount) await this.audit(c,workspace,'workspace_create',actor,null,{workspace});
+      return {workspace,provisioned:true};
+    },{create:true});
   }
   async audit(c, workspace, operation, actor, itemId, payload) {
     await c.query('INSERT INTO audit(workspace,operation,actor,item_id,payload) VALUES($1,$2,$3,$4,$5)',[workspace,operation,actor,itemId,payload]);
@@ -102,7 +113,9 @@ export class Store {
     return this.transaction(workspace,async c=>{
       const old=clean((await c.query('SELECT * FROM items WHERE workspace=$1 AND id=$2 FOR UPDATE',[workspace,id])).rows[0]);
       ensure(old?.status==='active','STATE','Only active items can be replaced.');
-      const proposal=await this.create(c,workspace,{...old,...input,id:undefined,supersedes:id},actor,automatic);
+      const metadata={...old.metadata};delete metadata.model_analysis;
+      Object.assign(metadata,input.metadata || {});
+      const proposal=await this.create(c,workspace,{...old,...input,metadata,id:undefined,supersedes:id},actor,automatic);
       await this.audit(c,workspace,'replacement',actor,proposal.id,{reason,predecessor:id});return proposal;
     });
   }
