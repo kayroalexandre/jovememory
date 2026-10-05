@@ -4,6 +4,10 @@ import { randomBytes } from 'node:crypto';
 import { hash } from '../src/config.mjs';
 try {await access('.env');console.error('.env already exists; local credentials were preserved.');process.exit(1);}catch(error) {if(error.code!=='ENOENT') throw error;}
 await mkdir('private',{recursive:true,mode:0o700});await chmod('private',0o700);
+const signingFolder=homedir()+'/.config/jovememory/secrets';
+await mkdir(signingFolder,{recursive:true,mode:0o700});
+const signingFile=signingFolder+'/project-signing.key';
+try {await writeFile(signingFile,randomBytes(32).toString('hex')+'\n',{mode:0o600,flag:'wx'});}catch(e){if(e.code!=='EEXIST') throw e;}
 const profiles=[];
 for(const [id,role] of [['local-reader','reader'],['local-writer','writer'],['local-reviewer','reviewer'],['local-admin','admin']]) {
   const token=randomBytes(32).toString('base64url');
@@ -17,7 +21,7 @@ const databaseUrl=(user,secret)=>{const url=new URL('postgresql://127.0.0.1:5547
 const values={NODE_ENV:'development',HOST:'127.0.0.1',PORT:3007,PUBLIC_URL:'http://127.0.0.1:3007',LOCAL_DATABASE_PASSWORD:password,
   MIGRATION_DATABASE_URL:databaseUrl('jovememory_owner',password),
   DATABASE_URL:databaseUrl('jovememory_app',appPassword),
-  AUTH_PROFILES:JSON.stringify(profiles),STDIO_PROFILE:'local-writer',ENABLE_PROVIDER:'false',MEMORY_REVIEW_MODE:'automatic',
+  AUTH_PROFILES:JSON.stringify(profiles),STDIO_PROFILE:'local-writer',PROJECT_TOKEN_SECRET_FILE:signingFile,ENABLE_PROVIDER:'false',MEMORY_REVIEW_MODE:'automatic',
   OPENROUTER_BASE_URL:'https://openrouter.ai/api/v1',OPENROUTER_DECISIONS_URL:'https://openrouter.ai/api/alpha/decisions',
   PROVIDER_API_KEY_FILE:homedir()+'/.config/jovememory/secrets/openrouter.key',EMBEDDING_MODEL:'google/gemini-embedding-2',EMBEDDING_DIMENSIONS:1536,
   DECISION_MODEL:'upstage/solar-decide',RERANK_MODEL:'qwen/qwen3.8-flash',KNOWLEDGE_MODEL:'deepseek/deepseek-v4-flash',

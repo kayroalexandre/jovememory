@@ -2,7 +2,7 @@
 
 Memória persistente para agentes de desenvolvimento: fontes organizadas por workspace, busca híbrida, ativação automática, histórico auditável e retomada de projetos. Implementação nova, com desenvolvimento local e produção no Railway.
 
-O servidor oferece **33 ferramentas MCP** por stdio e Streamable HTTP autenticado. As 28 funções da aplicação anterior foram reconstruídas; cinco ferramentas complementam provisionamento de workspaces, administração de nós/grafo, indexação e recuperação privada de mídia. Os contratos novos e suas diferenças estão em [PARITY.md](docs/PARITY.md).
+O servidor oferece **43 ferramentas MCP** por stdio e Streamable HTTP autenticado. As 28 funções da aplicação anterior foram reconstruídas; quinze ferramentas complementam provisionamento de workspaces, administração de nós/grafo, indexação e recuperação privada de mídia. Os contratos novos e suas diferenças estão em [PARITY.md](docs/PARITY.md).
 
 ## Instalação local
 
@@ -52,7 +52,7 @@ Quando `ENABLE_PROVIDER=true`, o Jove Memory usa uma matriz explícita de modelo
 | Decisions | `upstage/solar-decide` | Gate de escrita e travessia entre workspaces pela Decisions API |
 | Rerank | `qwen/qwen3.8-flash` | Reordenação automática dos candidatos recuperados; `rerank=false` desativa |
 | Knowledge | `deepseek/deepseek-v4-flash` | Extração de metadata e resumo auxiliar de consolidação |
-| Synthesis | `openrouter/free` com preferência por modelos gratuitos maiores | Compactação seletiva de evidências; fallback DeepSeek V4 Pro, V4 Flash e MiMo-V2.5 com teto de preço |
+| Synthesis | `openrouter/free` com preferência por modelos gratuitos maiores | Compactação seletiva de evidências; fallback DeepSeek V4 Pro, V4 Flash e MiMo-V2.5 sem teto de preço para fallback pago |
 
 A síntese tenta modelos gratuitos preferidos, depois o roteador gratuito geral e, em caso de falha ou resposta inválida, DeepSeek V4 Pro, V4 Flash e MiMo-V2.5. Rerank e enriquecimento conservam seus modelos especializados e fallbacks próprios. O modelo de decisão não recebe fallback generativo, porque o fluxo depende da probabilidade estruturada da Decisions API. Embeddings, fontes originais e conteúdo lossless continuam sendo a base persistida; resumos de modelo são metadata auxiliar e nunca substituem a evidência original.
 
@@ -76,7 +76,7 @@ npm run test:integration
 npm audit --omit=dev
 ```
 
-Integração usa bancos descartáveis e Bucket sintético no Compose próprio; exercita os 33 contratos, clientes MCP reais e backup/restauração. Não usa produção nem faz chamadas pagas. CI executa os mesmos gates. As imagens locais e as ações GitHub são fixadas por digest/commit.
+Integração usa bancos descartáveis e Bucket sintético no Compose próprio; exercita os 43 contratos, clientes MCP reais e backup/restauração. Não usa produção nem faz chamadas pagas. CI executa os mesmos gates. As imagens locais e as ações GitHub são fixadas por digest/commit.
 
 - [Arquitetura e decisões](docs/ARCHITECTURE.md)
 - [Segurança: público versus privado](docs/SECURITY.md)
@@ -98,6 +98,28 @@ Cada projeto usa um workspace explícito e credencial limitada a ele. O banco f�
 
 `SYNTHESIS_MODEL=openrouter/free` substitui o modelo primário anterior. O [roteador gratuito nativo](https://openrouter.ai/docs/guides/routing/routers/free-router) escolhe aleatoriamente entre modelos compatíveis; ele não promete selecionar o maior ou melhor modelo. Por isso, o jovememory consulta o catálogo atual, filtra modelos textuais com custo zero e contexto suficiente e envia primeiro uma lista ordenada pelo [fallback nativo](https://openrouter.ai/docs/guides/routing/model-fallbacks). A preferência inicial é Nemotron 3 Ultra 550B, Nemotron 3 Super 120B e Gemma 4 31B. Candidatos adicionais usam tamanho divulgado e contexto como critérios secundários; isso não é medição de inteligência. O catálogo é renovado a cada dez minutos e não contém dados do workspace.
 
-Tentativas gratuitas usam `provider.max_price` zero. Fallbacks pagos são DeepSeek V4 Pro, V4 Flash e MiMo-V2.5, com teto de US$ 0,25 de entrada e US$ 1,50 de saída por milhão de tokens, imposto ao roteamento de provedor. `FREE_INFERENCE_PREFERENCES`, `INFERENCE_FALLBACK_MODELS`, `INFERENCE_MAX_INPUT_PRICE` e `INFERENCE_MAX_OUTPUT_PRICE` permitem ajustar a política. O resultado informa modelo efetivo e `routing.tier` (`free`, `paid_fallback` ou `direct`); selecionar um modelo gratuito pela rota não é tratado como fallback pago.
+Tentativas gratuitas usam `provider.max_price` zero. Fallbacks pagos são DeepSeek V4 Pro, V4 Flash e MiMo-V2.5, com preferência por provedores baratos e **sem teto de preço**. `FREE_INFERENCE_PREFERENCES` e `INFERENCE_FALLBACK_MODELS` ajustam os modelos. As antigas variáveis de teto são ignoradas; disponibilidade, JSON, citações e timeout ainda são verificados. O resultado informa modelo efetivo e `routing.tier` (`free`, `paid_fallback` ou `direct`); selecionar um modelo gratuito pela rota não é tratado como fallback pago.
 
 Disponibilidade, limites gratuitos e qualidade variam. JSON e citações continuam validados localmente, e inferência permanece opcional por pedido técnico do agente. Embeddings, decisão e rerank não mudam de função.
+
+## Workspaces automáticos e memória atualizada — 0.5.0
+
+O conector local `src/project-bridge.mjs` identifica o `origin` do Git e cria o workspace
+com o nome do repositório. Um controlador privado provisiona a associação; o agente
+recebe somente uma conexão writer temporária restrita ao projeto. A identidade do
+repositório inclui host e proprietário, impedindo unir repositórios diferentes que
+tenham o mesmo nome. Colisão é sinalizada sem conceder acesso; não há workspace
+compartilhado como fallback. A associação existente pode ser explicitamente
+administrada, mas nunca é inferida da consulta do agente.
+
+O conector observa hashes dos arquivos versionados antes de chamadas e a cada
+60 segundos enquanto estiver em execução. Ele não envia automaticamente o conteúdo
+dos arquivos. Memórias com `source_refs` mostram fontes alteradas/ausentes e
+necessidade de conferência. `memory_record` atualiza a versão ativa da mesma chave
+por padrão; `memory_retire` retira fatos obsoletos da recuperação sem apagar história.
+O guia MCP instrui o agente a conferir fontes, registrar mudanças e manter checkpoints.
+Essas instruções apoiam o raciocínio do agente; não comprovam que ele as seguiu.
+
+O papel `observer` consulta somente `memory_overview`: métricas globais privadas
+sem acesso ao corpus. Administração de conteúdo/credenciais permanece separada.
+Veja [fluxo, configuração e limites](docs/MEMORY-LIFECYCLE.md).

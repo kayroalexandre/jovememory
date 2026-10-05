@@ -2,9 +2,9 @@
 
 ## Implementado
 
-33 ferramentas MCP, incluindo os 28 objetivos funcionais catalogados da aplicação anterior, com mudanças explícitas em PARITY.md. Código/configuração novos. HTTP autenticado e stdio com SDK oficial; persistência PostgreSQL/pgvector isolada por RLS; mídia S3 privada; ativação automática/histórico/consolidação e modo manual opcional; continuidade/registros; avaliação; snapshot/restore; ambiente de desenvolvimento próprio.
+43 ferramentas MCP, incluindo os 28 objetivos funcionais catalogados da aplicação anterior, com mudanças explícitas em PARITY.md. Código/configuração novos. HTTP autenticado e stdio com SDK oficial; persistência PostgreSQL/pgvector isolada por RLS; mídia S3 privada; ativação automática/histórico/consolidação e modo manual opcional; continuidade/registros; avaliação; snapshot/restore; ambiente de desenvolvimento próprio.
 
-## Verificado localmente
+## Verificado localmente — histórico até 0.4.0
 
 Versão 0.4.0: syntax/version, scanner público, 20 testes unitários e 19 cenários de integração (20 resultados TAP incluindo o teste principal), com todos os 33 nomes exercitados. Clientes MCP reais por HTTP/stdio, role runtime sem superuser/BYPASSRLS, autenticação/permissões/origin, concorrência de revisão e integridade/restauração de snapshot com mídia. Cobertura nova: ativação automática em todos os caminhos de escrita, recuperação imediata, checkpoint/registro, substituição concorrente, consolidação, validade temporal, gate opcional e rollback completo de conteúdo/auditoria. O modo manual foi testado separadamente. Dependências: auditoria npm sem vulnerabilidade conhecida na consulta desta entrega.
 
@@ -45,3 +45,20 @@ Provisionamento administrativo de workspace via MCP é idempotente, auditado e r
 O modelo primário anterior foi retirado da configuração vigente. Síntese usa rota gratuita com catálogo dinâmico e preferência por modelos maiores: Nemotron Ultra, Super e Gemma 31B. Fallbacks pagos explícitos: DeepSeek V4 Pro, V4 Flash e MiMo-V2.5, sujeitos aos tetos de US$ 0,25 de entrada e US$ 1,50 de saída por milhão de tokens. Modelos efetivos e classe da rota são declarados, sem confundir seleção gratuita com fallback pago. Embeddings, decisão, rerank e inferência seletiva preservam seus papéis.
 
 Testes cobrem seleção de candidatos gratuitos, rejeição de modalidades/preços incompatíveis, preferências, identidade efetiva, JSON/citações, fallback pago com teto e comportamento do contexto para rota gratuita/paga. Chamadas reais são validação operacional separada; não medem superioridade, calibração ou disponibilidade futura. O histórico acima conserva o diagnóstico do modelo anterior e não representa a configuração atual.
+
+## Lifecycle e projetos automáticos — 0.5.0
+
+Schema 3, conector Git/stdio, matrícula com credencial scoped, revogação por epoch,
+observações de fontes, guia de agente, retirement auditado, substituição por chave
+e métricas globais sem corpus implementados. JOSE 6.2.12 foi fixado como dependência
+para validação de tokens. O teto de preço pago foi retirado por decisão do operador;
+o histórico 0.4.0 acima descreve a política anterior.
+
+Gates completos locais passaram: syntax/version, scanner público, 24 testes
+unitários e auditoria npm sem vulnerabilidade conhecida. Validação em Compose
+isolado: 23 cenários de integração (24 resultados TAP),
+incluindo todos os 43 nomes MCP, broker stdio real com Git temporário, bloqueio de
+colisão, escopo/revogação de JWT, RLS nas tabelas novas, mudanças de fontes,
+revalidação concorrente, registro por chave/ambiguidade, retirement e backup/restore
+com fingerprint de projects/sources/telemetry. Publicação e operação desta versão
+exigem gates completos e smoke privado após deploy; implementação não basta.

@@ -4,7 +4,7 @@ import { resolve, relative, isAbsolute, sep } from 'node:path';
 import pg from 'pg';
 import { hash, ensure } from '../src/config.mjs';
 import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
-export const tables=['workspaces','nodes','items','links','media','audit','settings','schema_migrations'];
+export const tables=['workspaces','projects','sources','telemetry','nodes','items','links','media','audit','settings','schema_migrations'];
 export async function fingerprint(client) {
   const result={};
   for(const table of tables) {

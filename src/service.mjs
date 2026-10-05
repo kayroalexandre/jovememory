@@ -3,6 +3,8 @@ import { VERSION, authorize, ensure, hash, evidence, bounded, publicConfig } fro
 import { planIngestion } from './ingest.mjs';
 import { Provider } from './provider.mjs';
 import { Media } from './media.mjs';
+import { issueProjectToken } from './project-auth.mjs';
+import { AGENT_INSTRUCTIONS, lifecycle } from './lifecycle.mjs';
 export function fuse(arms,limit) {
   const candidates=new Map();
   for(const [arm,rows] of Object.entries(arms)) rows.forEach((row,index)=>{
@@ -24,6 +26,19 @@ export class Service {
     return {workspace,item,outcome:item.status==='active'?'accepted':'proposed',review_required:item.status==='proposed',...extra};
   }
   async call(name,input,profile) {
+    const started=performance.now();let result,failure;
+    try {result=await this.run(name,input,profile);return result;} catch(error) {failure=error;throw error;}
+    finally {
+      const parsed=TOOLS[name]?.schema.safeParse(input);
+      if(parsed?.success && parsed.data.workspace) {
+        try {
+          authorize(profile,TOOLS[name].permission,parsed.data.workspace);
+          await this.store.observe(parsed.data.workspace,{tool:name,success:!failure,error_code:failure?.code || (failure?'INTERNAL':null),duration_ms:performance.now()-started,model:result?.synthesis?.model,route:result?.synthesis?.routing?.tier});
+        } catch { /* Observability must never turn a successful memory transaction into a failure. */ }
+      }
+    }
+  }
+  async run(name,input,profile) {
     const tool=TOOLS[name];ensure(tool,'TOOL','Unknown tool.');
     const parsed=tool.schema.safeParse(input);ensure(parsed.success,'INPUT','Arguments do not match the strict tool schema.');
     const a=parsed.data;authorize(profile,tool.permission,a.workspace);
@@ -61,10 +76,10 @@ export class Service {
     return values;
   }
   async diagnose(workspace,references) {
-    const values=[];
+    const values=[];if(!references?.length) return values;const sources=await this.store.sourceMap(workspace);
     for(const ref of references || []) {
       const item=await this.store.read(workspace,ref.id);
-      values.push({...ref,current_hash:item?.content_hash || null,eligible:isEligible(item),unchanged:item?.content_hash===ref.content_hash});
+      values.push({...ref,current_hash:item?.content_hash || null,eligible:isEligible(item),unchanged:item?.content_hash===ref.content_hash,source_lifecycle:item?lifecycle(item,sources).status:'missing'});
     }
     return values;
   }
@@ -90,6 +105,8 @@ export class Service {
           .sort((x,y)=>y.rerank_score-x.rerank_score);
       } catch {degraded.push('rerank_unavailable');}
     }
+    const sources=await this.store.sourceMap(a.workspace);
+    results=results.map(item=>({...item,lifecycle:lifecycle(item,sources)}));
     return {workspace:a.workspace,results,as_of:asOf,degraded,thresholds:this.config.thresholds,evidence:{...evidence,retrieval_incomplete:degraded.length>0},
       lexical_engine:'postgresql_portuguese_fts',vector_engine:'pgvector_exact',vector_similarity_floor:null};
   }
@@ -105,11 +122,36 @@ export class Service {
   async dispatch(name,a,p) {
     const s=this.store,w=a.workspace,actor=p.id,automatic=this.config.reviewMode==='automatic';
     switch(name) {
+      case 'memory_open_project': {
+        authorize(p,'provision',a.repository_name);ensure(this.config.projectKey,'CONFIG','Automatic project enrollment is not configured.');
+        const project=await s.enroll(a.repository_name,a.repository_id,a.repository_name,actor);
+        return {workspace:project.workspace,repository_id:project.repository_id,...await issueProjectToken(project,this.config.projectKey)};
+      }
+      case 'memory_revoke_project':return {workspace:w,...await s.revokeProject(w,actor,a.reason)};
+      case 'memory_overview': {
+        const authorized=(await s.workspaces()).filter(x=>(p.workspaces.includes('*') || p.workspaces.includes(x)) && (!a.after || x>a.after));
+        const names=authorized.slice(0,a.limit),projects=[];
+        for(const workspace of names) projects.push({workspace,...await s.projectMetrics(workspace)});
+        return {projects,next_after:authorized.length>a.limit?names.at(-1):null,window_days:7,telemetry_retention_days:30,memory_content_included:false,metrics_are_not_quality_certification:true};
+      }
+      case 'memory_agent_guide':return {workspace:w,instructions:AGENT_INSTRUCTIONS,write_policy:this.config.reviewMode,
+        workflow:{start:['memory_resume','memory_project','memory_changes','memory_maintenance'],verified_change:['memory_update_item','memory_record','memory_revalidate','memory_retire','memory_checkpoint']},
+        boundaries:{authorized_workspaces:p.workspaces,global_metrics_role:'observer_or_admin',cross_project_content_implicit:false},evidence};
+      case 'memory_sync_sources':return {workspace:w,...await s.syncSources(w,a.sources,a.revision,a.complete,actor)};
+      case 'memory_sources':return {workspace:w,...await s.sources(w,a)};
+      case 'memory_changes':return {workspace:w,...await s.changes(w,a),evidence};
+      case 'memory_revalidate':return {workspace:w,...await s.revalidate(w,a.id,a.content_hash,a.source_refs,actor,a.reason)};
+      case 'memory_retire':ensure(automatic || p.role==='admin','REVIEW','Retirement needs automatic policy or an administrator in manual mode.');return {workspace:w,...await s.mutate(w,a.id,'retire',actor,{reason:a.reason})};
+      case 'memory_maintenance': {
+        const page=await s.page(w,{...a,include_ineligible:true}),sources=await s.sourceMap(w),items=[];
+        for(const item of page.items) items.push({id:item.id,kind:item.kind,created_at:item.created_at,lifecycle:lifecycle(item,sources),reference_diagnostics:await this.diagnose(w,item.metadata.references)});
+        return {workspace:w,items,next_cursor:page.next_cursor,as_of:page.as_of,page_only:true,evidence};
+      }
       case 'memory_create_workspace':return s.workspace(w,actor);
       case 'memory_version': return {name:'jovememory',version:VERSION,workspaces:(await s.workspaces()).filter(x=>p.workspaces.includes('*') || p.workspaces.includes(x)),evidence};
       case 'memory_capabilities': return {...publicConfig(this.config),profile:{id:actor,role:p.role,workspaces:p.workspaces},tools:this.available(p).map(t=>t.name),review:automatic?'automatic':'separate_profile_required',transports:['stdio','streamable-http']};
       case 'memory_search': return this.search(a);
-      case 'memory_read': {const item=await s.read(w,a.id);if(item) item.links=item.links.filter(link=>p.workspaces.includes('*') || p.workspaces.includes(link.target_workspace));return {workspace:w,item,evidence};}
+      case 'memory_read': {const item=await s.read(w,a.id);if(item) {item.links=item.links.filter(link=>p.workspaces.includes('*') || p.workspaces.includes(link.target_workspace));item.lifecycle=lifecycle(item,await s.sourceMap(w));}return {workspace:w,item,evidence};}
       case 'memory_tree':return {workspace:w,nodes:await s.tree(w)};
       case 'memory_list': {const page=await s.page(w,a);return {workspace:w,...page,items:page.items.map(({content,metadata,...item})=>item)};}
       case 'memory_propose_write': return this.writeResult(w,await s.propose(w,a,actor,automatic));
@@ -121,7 +163,7 @@ export class Service {
       case 'memory_list_proposed':return {workspace:w,...await s.page(w,{...a,status:'proposed'})};
       case 'memory_update_item': {
         const {gate,enrichment,metadata}=await this.evaluateWrite(w,a);
-        return this.writeResult(w,await s.update(w,a.id,{content:a.content,valid_from:a.valid_from,valid_until:a.valid_until,gate,metadata},a.reason,actor,automatic),{gate,enrichment});
+        return this.writeResult(w,await s.update(w,a.id,{content:a.content,valid_from:a.valid_from,valid_until:a.valid_until,source_refs:a.source_refs,gate,metadata},a.reason,actor,automatic),{gate,enrichment});
       }
       case 'memory_delete':return {workspace:w,...await s.mutate(w,a.id,'delete',actor,{reason:a.reason})};
       case 'memory_move_item':return {workspace:w,...await s.mutate(w,a.id,'move',actor,{node:a.node,reason:a.reason})};
@@ -133,13 +175,13 @@ export class Service {
         return {workspace:w,...await s.ingestion(w,plan,actor,automatic),review_required:!automatic};
       }
       case 'memory_context': {
-        const search=await this.search(a),results=[];
+        const search=await this.search(a),results=[],sources=await s.sourceMap(w);
         let gaps=0;
         for(const candidate of search.results) {
           const item=await s.read(w,candidate.id);
           if(!isEligible(item,search.as_of)) {gaps++;continue;}
           results.push({id:item.id,workspace:w,content:item.content,content_hash:item.content_hash,created_at:item.created_at,
-            valid_from:item.valid_from,valid_until:item.valid_until,provenance:candidate.provenance,observed_at:new Date().toISOString()});
+            valid_from:item.valid_from,valid_until:item.valid_until,provenance:candidate.provenance,observed_at:new Date().toISOString(),lifecycle:lifecycle(item,sources)});
         }
         let synthesis=null;
         if(a.synthesize && results.length && this.config.provider.enabled) {
@@ -184,15 +226,15 @@ export class Service {
         const page=await s.page(w,{...a,kind:'checkpoint'}),checkpoints=[];
         for(const item of page.items) {
           if(a.session && item.metadata.session!==a.session) continue;
-          checkpoints.push({...item,reference_diagnostics:await this.diagnose(w,item.metadata.references)});
+          checkpoints.push({...item,lifecycle:lifecycle(item,await s.sourceMap(w)),reference_diagnostics:await this.diagnose(w,item.metadata.references)});
         }
         return bounded({workspace:w,checkpoints,next_cursor:page.next_cursor,as_of:page.as_of,evidence},a.max_bytes);
       }
       case 'memory_record': {
         ensure(a.basis!=='measured' || (a.observed_at && a.references.length),'RECORD','Measured records require observation date and local references.');
-        const {workspace,statement,references,...metadata}=a;
+        const {workspace,statement,references,replace_key,...metadata}=a;
         metadata.references=await this.references(w,references);metadata.contract=1;
-        return this.writeResult(w,await s.propose(w,{content:statement,kind:'record',metadata,valid_until:a.expires_at},actor,automatic));
+        return this.writeResult(w,await s.record(w,{content:statement,kind:'record',metadata,valid_until:a.expires_at},actor,automatic,replace_key));
       }
       case 'memory_project': {
         const page=await s.page(w,{...a,kind:'record'}),records=[],ambiguities=[],values=new Map();
@@ -200,7 +242,7 @@ export class Service {
           const metadata=item.metadata,logicalKey=metadata.kind+':'+metadata.key;
           if(values.has(logicalKey) && values.get(logicalKey)!==item.content) ambiguities.push({key:logicalKey,id:item.id,reason:'different_active_statements'});
           values.set(logicalKey,item.content);
-          records.push({...item,contract_valid:metadata.contract===1 && Boolean(metadata.key && metadata.basis),reference_diagnostics:await this.diagnose(w,metadata.references)});
+          records.push({...item,lifecycle:lifecycle(item,await s.sourceMap(w)),contract_valid:metadata.contract===1 && Boolean(metadata.key && metadata.basis),reference_diagnostics:await this.diagnose(w,metadata.references)});
         }
         return bounded({workspace:w,records,ambiguities,page_only:true,next_cursor:page.next_cursor,as_of:page.as_of,evidence},a.max_bytes);
       }

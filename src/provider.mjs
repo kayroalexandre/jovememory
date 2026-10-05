@@ -101,14 +101,11 @@ export class Provider {
       for(const target of routes) try {
         const free=candidate==='openrouter/free',remaining=deadline-Date.now();
         ensure(remaining>0,'PROVIDER','Model routing exceeded its time budget.');
-        const price=free ? {prompt:0,completion:0,request:0} : model==='openrouter/free' ? {
-          prompt:this.options.inferenceMaxInputPrice ?? 0.25,completion:this.options.inferenceMaxOutputPrice ?? 1.50,request:0
-        }:null;
         const structured=schema && ['qwen/qwen3.8-flash','deepseek/deepseek-v4-flash','deepseek/deepseek-v4-pro','xiaomi/mimo-v2.5'].includes(candidate);
         const r=await this.request('chat/completions',{...target,temperature:0,max_tokens:maxTokens,
           // Preferred models may lack response_format; local validation is always mandatory.
           ...(!target.models?{response_format:structured ? {type:'json_schema',json_schema:{name:'memory_result',strict:true,schema}}:{type:'json_object'}}:{}),
-          ...(price?{provider:{sort:'price',max_price:price}}:{}),
+          ...(free?{provider:{sort:'price',max_price:{prompt:0,completion:0,request:0}}}:model==='openrouter/free'?{provider:{sort:'price'}}:{}),
           ...(free || candidate==='qwen/qwen3.8-flash'?{reasoning:{enabled:false}}:{}),messages:[
             {role:'system',content:system},
             {role:'user',content:JSON.stringify(data)}

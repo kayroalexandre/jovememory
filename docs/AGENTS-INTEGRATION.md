@@ -43,3 +43,25 @@ A credencial cotidiana não cria workspaces nem administra outros projetos. Cont
 O agente continua escolhendo quando sintetizar. Não fixe expectativas no nome do modelo primário: `openrouter/free` é uma rota, e `synthesis.model` contém o modelo efetivo. Leia `synthesis.routing.tier` e `paid_fallback`; escolha gratuita válida não representa falha. Fallback pago é declarado em `degraded`. Preferência por modelos maiores não prova maior acurácia. O texto sintetizado continua sendo evidência auxiliar com referências a conferir.
 
 O workspace da aplicação de memória não é memória global do usuário. Guarde nele somente o projeto da própria aplicação; conteúdo de outros projetos precisa de associação e perfil exclusivos, inclusive quando for produzido em uma sessão já aberta antes da configuração do cliente.
+
+## Fluxo automático recomendado — 0.5.0
+
+Use o conector Git local: ele fornece workspace e credencial; não tente escolher
+outro workspace em argumentos. Consulte `memory_connection_status` e
+`memory_agent_guide`. Ao iniciar/retomar: checkpoint, registros de projeto, feed
+de mudanças e manutenção. Leia as fontes atuais dos fatos que afetarem a tarefa.
+O guia vem do código do servidor, separado do conteúdo recuperado não confiável.
+
+Para mudanças verificadas, use `memory_update_item` ou a mesma kind/key de
+`memory_record`, com `source_refs` observadas (`memory_sources`). Registre o que
+mudou, por quê, fonte/revisão, testes efetivamente executados e pendências. Se o
+fato continua correto apesar da fonte alterada, `memory_revalidate` registra a
+conferência sem reescrever o texto. Se foi removido, `memory_retire` preserva motivo
+e história. Feche com checkpoint e referências atuais. Não declare resultados
+que não observou, nem descarte versões antigas para esconder divergências.
+
+Memória sem fontes é `untracked`; fonte ausente/alterada pede revalidação, não
+confirma falsidade. Hash igual não demonstra verdade. Modelos de decisão/rerank
+apoiam seleção; o agente mantém liberdade técnica e responsabilidade pela tarefa.
+Overview global de observer fornece somente agregados privados. Não copie nomes,
+corpus ou evidências de clientes para a memória do projeto da própria aplicação.

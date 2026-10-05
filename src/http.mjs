@@ -1,6 +1,7 @@
 import express from 'express';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { config, authenticate } from './config.mjs';
+import { config } from './config.mjs';
+import { authenticateProject } from './project-auth.mjs';
 import { Store } from './store.mjs';
 import { Service } from './service.mjs';
 import { createMcp } from './mcp.mjs';
@@ -14,8 +15,8 @@ export function createApp(service,c) {
     next();
   });
   app.get('/health',async(req,res)=>{try {await service.store.health();res.json({status:'ready'});}catch {res.status(503).json({status:'unavailable'});}});
-  app.use('/mcp',(req,res,next)=>{
-    const profile=authenticate(req.headers.authorization,c.profiles);
+  app.use('/mcp',async(req,res,next)=>{
+    const profile=await authenticateProject(req.headers.authorization,c,service.store);
     if(!profile) {res.set('WWW-Authenticate','Bearer realm="jovememory"');return res.status(401).json({error:'Authentication required'});}
     req.profile=profile;next();
   });
