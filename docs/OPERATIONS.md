@@ -119,7 +119,7 @@ Na configuração local padrão, a API usa porta 3007 para reduzir conflito com 
 
 ## Validar a rota gratuita — 0.4.0
 
-Depois de alterar variáveis, faça build novo da fonte e confirme `memory_capabilities.models.synthesis`, preferências e ausência de teto pago. Use conteúdo sintético para `memory_context(synthesize:true)`; confira `synthesis.model` efetivo, `synthesis.routing.tier`, citações e degradação. `free` significa tentativa sob teto zero; `paid_fallback` declara uso do fallback pago. O roteador gratuito geral não é um ranking de inteligência. O catálogo atual e os preços devem ser revistos ao trocar preferências, e limites de preço continuam aplicados a cada chamada.
+Depois de alterar variáveis, faça build novo da fonte e confirme `memory_capabilities.models.synthesis`, preferências e ausência de teto pago. Use conteúdo sintético para `memory_context(synthesize:true)`; confira `synthesis.model` efetivo, `synthesis.routing.tier`, citações e degradação. `free` significa tentativa sob teto zero; `paid_fallback` declara uso do fallback pago. O roteador gratuito geral não é um ranking de inteligência. O catálogo atual e os preços devem ser revistos ao trocar preferências. Desde 0.5.0, o teto zero se aplica somente às tentativas gratuitas; chamadas de fallback pago não têm teto de preço.
 
 Associe cada cliente ao workspace do próprio projeto e confirme o perfil antes de gravar. O workspace da aplicação de memória guarda somente contexto da própria aplicação; implementação e backlog de clientes pertencem aos workspaces correspondentes. Auditoria e versões históricas são preservadas quando uma nota é realocada; busca normal exclui a origem apagada. Não trate a memória da aplicação como workspace global para projetos sem configuração.
 
