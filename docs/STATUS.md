@@ -10,6 +10,12 @@ Versão 0.2.0: syntax/version, scanner público, 14 testes unitários e 17 cená
 
 Não houve leitura/importação de corpus pessoal, migração de dados antigos, alteração dos recursos antigos ou chamada paga de modelo. `.env` e `private/` contêm somente configuração nova da instalação local e são ignorados pelo Git.
 
+## Roteamento OpenRouter preparado
+
+A camada de provedor foi ampliada para a matriz especializada definida para o Jove Memory: `google/gemini-embedding-2` em embeddings, `upstage/solar-decide` em gates probabilísticos pela Decisions API, `qwen/qwen3.8-flash` em rerank, `deepseek/deepseek-v4-flash` em extração/consolidação auxiliar e `stealth/space-bunny-alpha` em síntese de contexto. Os modelos generativos têm fallback entre si; decisões probabilísticas não recebem fallback de chat. Saídas gerativas permanecem auxiliares e não substituem conteúdo lossless ou evidências persistidas.
+
+A produção só é considerada conectada ao OpenRouter quando `OPENROUTER_API_KEY` estiver cadastrada como segredo de produção e `ENABLE_PROVIDER=true` tiver sido aplicado com deploy saudável. O desenvolvimento local usa `private/openrouter.key` e `npm run provider:enable`; a chave não é copiada para o `.env`.
+
 ## Limites e próximos gates
 
 Repositório público novo publicado, com proteção de branch, CI obrigatório, proteção de push contra segredos, alertas de dependências e canal privado de vulnerabilidades. Produção ativada em projeto Railway privado separado: aplicação sem volume, PostgreSQL/pgvector com volume e rede privada sem proxy TCP público, Bucket nativo de mídia.
