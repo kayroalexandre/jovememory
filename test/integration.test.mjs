@@ -3,6 +3,9 @@ import assert from 'node:assert/strict';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import { execFileSync } from 'node:child_process';
+import { mkdir,symlink } from 'node:fs/promises';
+import { authenticateProject } from '../src/project-auth.mjs';
 import pg from 'pg';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
@@ -22,7 +25,7 @@ test('Isolated database, object storage, MCP and backup lifecycle',async t=>{
   await admin.query(`CREATE DATABASE ${dbName}`);
   const adminUrl=database(process.env.MIGRATION_DATABASE_URL,dbName),appUrl=database(process.env.DATABASE_URL,dbName);
   const restoreName='jovememory_restore_'+suffix;
-  const c=config({...process.env,DATABASE_URL:appUrl,ENABLE_PROVIDER:'false',S3_BUCKET:'test-'+suffix,MEMORY_REVIEW_MODE:'manual'});
+  const c=config({...process.env,PROJECT_TOKEN_SECRET:randomBytes(32).toString('hex'),DATABASE_URL:appUrl,ENABLE_PROVIDER:'false',S3_BUCKET:'test-'+suffix,MEMORY_REVIEW_MODE:'manual'});
   const reader={id:'test-reader',role:'reader',workspaces:['synthetic-a']},writer={id:'test-writer',role:'writer',workspaces:['synthetic-a']},
     reviewer={id:'test-reviewer',role:'reviewer',workspaces:['synthetic-a']},operator={id:'test-admin',role:'admin',workspaces:['synthetic-a','synthetic-b']};
   let store,server,bucketCreated=false,restoreCreated=false,backupDir;
@@ -115,7 +118,7 @@ test('Isolated database, object storage, MCP and backup lifecycle',async t=>{
       assert.equal((await call('memory_resume',{workspace:'synthetic-a',session:'synthetic-session'},reader)).checkpoints[0].reference_diagnostics[0].unchanged,true);
       await assert.rejects(call('memory_record',{workspace:'synthetic-a',kind:'evidence',key:'example.measurement',title:'Measurement',statement:'Synthetic measured value',basis:'measured'}),{code:'RECORD'});
       for(const statement of ['Synthetic value one','Synthetic value two']) {
-        const record=await call('memory_record',{workspace:'synthetic-a',kind:'evidence',key:'example.measurement',title:'Synthetic measurement',statement,basis:'measured',observed_at:'2026-01-01T00:00:00Z',references:[itemId]});await accept(record.item.id);
+        const record=await call('memory_record',{workspace:'synthetic-a',kind:'evidence',key:'example.measurement',title:'Synthetic measurement',statement,replace_key:false,basis:'measured',observed_at:'2026-01-01T00:00:00Z',references:[itemId]});await accept(record.item.id);
       }
       const view=await call('memory_project',{workspace:'synthetic-a'},reader);assert.equal(view.ambiguities.length,1);
       const context=await call('memory_context',{workspace:'synthetic-a',query:'synthetic',max_bytes:1024},reader);
@@ -164,7 +167,7 @@ test('Isolated database, object storage, MCP and backup lifecycle',async t=>{
       assert.equal((await mocked.call('memory_cross_workspace',{workspace:'synthetic-a',query:'synthetic'},operator)).traversal[0].status,'traversed');
     });
     await t.test('Diagnostics, audit and scoped catalog do not reveal credentials',async()=>{
-      await call('memory_stats',{workspace:'synthetic-a'},reader);assert.equal((await call('memory_doctor',{workspace:'synthetic-a'},reader)).schema,2);
+      await call('memory_stats',{workspace:'synthetic-a'},reader);assert.equal((await call('memory_doctor',{workspace:'synthetic-a'},reader)).schema,3);
       assert.ok((await call('memory_mutations',{workspace:'synthetic-a',id:itemId},reader)).mutations.length>0);
       assert.deepEqual((await call('memory_version',{},reader)).workspaces,['synthetic-a']);
       const capabilities=await call('memory_capabilities',{},reader);assert.ok(!capabilities.tools.includes('memory_review'));
@@ -346,6 +349,90 @@ test('Isolated database, object storage, MCP and backup lifecycle',async t=>{
       const audit=await store.mutations(w,{id:replacement.item.id,limit:20});assert.ok(audit.some(x=>x.operation==='embed'&&x.actor===profile.id));
       assert.ok(['embedding','decision','knowledge','rerank','synthesis'].every(role=>calls.some(x=>x[0]===role)));
     });
+    await t.test('Automatic enrollment binds repository identity, prevents collisions and supports immediate credential revocation',async()=>{
+      const controller={id:'synthetic-controller',role:'provisioner',workspaces:['*']};
+      const input={repository_id:hash('synthetic-owned-repository'),repository_name:'Synthetic.App'};
+      await assert.rejects(call('memory_open_project',input,writer),{code:'FORBIDDEN'});
+      const enrolled=await call('memory_open_project',input,controller);
+      const repeated=await call('memory_open_project',input,controller);assert.equal(enrolled.workspace,repeated.workspace);
+      const scoped=await authenticateProject('Bearer '+enrolled.token,c,store);assert.deepEqual(scoped.workspaces,['Synthetic.App']);
+      await assert.rejects(call('memory_open_project',{...input,repository_id:hash('another-owner')},controller),{code:'PROJECT_COLLISION'});
+      await assert.rejects(call('memory_stats',{workspace:'synthetic-a'},scoped),{code:'FORBIDDEN'});
+      await assert.rejects(call('memory_version',{},controller),{code:'FORBIDDEN'});
+      assert.equal((await store.mutations('Synthetic.App',{limit:100})).filter(x=>x.operation==='project_enroll').length,1);
+      await call('memory_revoke_project',{workspace:'Synthetic.App',reason:'Synthetic credential revocation'},{...operator,workspaces:['*']});
+      assert.equal(await authenticateProject('Bearer '+enrolled.token,c,store),null);
+    });
+    await t.test('Source changes are observed without content, revalidation checks hashes, and retirement preserves audit',async()=>{
+      const automatic=new Service(store,{...c,reviewMode:'automatic'}),w='synthetic-a';
+      const auto=(name,args,profile=writer)=>{called.add(name);return automatic.call(name,{workspace:w,...args},profile);};
+      const firstHash=hash('source one'),nextHash=hash('source two'),locator='docs/lifecycle.md';
+      const observe=sha256=>auto('memory_sync_sources',{sources:[{locator,sha256,present:true}],revision:'a'.repeat(40)});
+      await observe(firstHash);
+      const item=(await auto('memory_write',{content:'Synthetic lifecycle orchid architecture.',source_refs:[{locator,sha256:firstHash}]})).item;
+      assert.equal((await auto('memory_read',{id:item.id})).item.lifecycle.status,'matches_observation');
+      await observe(nextHash);
+      const maintenance=await auto('memory_maintenance',{limit:100});assert.equal(maintenance.items.find(x=>x.id===item.id).lifecycle.status,'needs_revalidation');
+      const context=await auto('memory_context',{query:'orchid',max_bytes:16384});assert.equal(context.results[0].lifecycle.status,'needs_revalidation');
+      await assert.rejects(auto('memory_revalidate',{id:item.id,content_hash:item.content_hash,source_refs:[{locator,sha256:firstHash}],reason:'Stale observation'}),{code:'SOURCE_CHANGED'});
+      const fresh=await auto('memory_revalidate',{id:item.id,content_hash:item.content_hash,source_refs:[{locator,sha256:nextHash}],reason:'Read current synthetic source; fact still applies'});assert.equal(fresh.truth_verified,false);
+      assert.equal((await auto('memory_read',{id:item.id})).item.lifecycle.status,'matches_observation');
+      await assert.rejects(auto('memory_revalidate',{id:item.id,content_hash:hash('wrong memory'),source_refs:[{locator,sha256:nextHash}],reason:'Concurrent stale item'}),{code:'CONFLICT'});
+      await auto('memory_sync_sources',{sources:[],complete:true});
+      assert.equal((await auto('memory_read',{id:item.id})).item.lifecycle.source_diagnostics[0].status,'missing');
+      await observe(firstHash);
+      const replacement=await auto('memory_update_item',{id:item.id,content:'Revised synthetic orchid implementation.',reason:'Source reverted and architecture changed',source_refs:[{locator,sha256:firstHash}]});
+      assert.equal(replacement.item.status,'active');assert.equal((await store.read(w,item.id)).status,'invalidated');
+      await auto('memory_retire',{id:replacement.item.id,reason:'Implementation explicitly removed'});
+      assert.equal((await auto('memory_search',{query:'orchid'})).results.length,0);
+      assert.ok((await store.mutations(w,{id:replacement.item.id,limit:100})).some(x=>x.operation==='retire'));
+      const feed=await auto('memory_changes',{limit:100});assert.ok(feed.changes.some(x=>x.operation==='sources_change'));assert.ok(feed.changes.every(x=>!('item' in x.details) && !('content' in x.details)));
+      const sources=await auto('memory_sources',{limit:100});assert.ok(sources.sources.some(x=>x.locator===locator));
+      const guide=await auto('memory_agent_guide',{});assert.equal(guide.boundaries.cross_project_content_implicit,false);
+      const expired=(await auto('memory_write',{content:'Expired orchid experiment.',valid_until:'2000-01-01T00:00:00Z'})).item;
+      assert.equal((await auto('memory_maintenance',{limit:100})).items.find(x=>x.id===expired.id).lifecycle.status,'expired');
+      const owner=new pg.Client({connectionString:appUrl});await owner.connect();
+      try{await owner.query('BEGIN');await owner.query("SELECT set_config('app.workspace','synthetic-b',true)");for(const table of ['sources','projects','telemetry'])assert.ok((await owner.query('SELECT workspace FROM '+table)).rows.every(x=>x.workspace==='synthetic-b'));await owner.query('COMMIT');}finally{await owner.end();}
+      await assert.rejects(auto('memory_overview',{}),{code:'INPUT'});
+      const observer={id:'synthetic-observer',role:'observer',workspaces:['*']};
+      assert.deepEqual(service.available(observer).map(x=>x.name),['memory_overview']);
+      await assert.rejects(call('memory_read',{workspace:w,id:item.id},observer),{code:'FORBIDDEN'});
+      const global=await call('memory_overview',{limit:100},observer);assert.equal(global.memory_content_included,false);assert.ok(global.projects.some(x=>x.workspace===w && x.usage.calls>0 && x.lifecycle.expired>0));
+      assert.ok(!JSON.stringify(global).includes('Synthetic lifecycle orchid architecture.'));
+      await assert.rejects(call('memory_overview',{},reader),{code:'FORBIDDEN'});
+    });
+    await t.test('Keyed records replace current state atomically, preserve explicit ambiguity and recover expired keys',async()=>{
+      const automatic=new Service(store,{...c,reviewMode:'automatic'}),w='synthetic-a';
+      const record=statement=>automatic.call('memory_record',{workspace:w,kind:'decision',key:'synthetic.lifecycle-key',title:'Current decision',statement,basis:'asserted'},writer);
+      const first=await record('Synthetic original system.'),same=await record('Synthetic original system.');assert.equal(first.item.id,same.item.id);
+      const second=await record('Synthetic revised system.');assert.equal(second.item.supersedes,first.item.id);assert.equal((await store.read(w,first.item.id)).status,'invalidated');
+      const expired=await automatic.call('memory_record',{workspace:w,kind:'issue',key:'synthetic.expired-key',title:'Old issue',statement:'Expired issue',basis:'asserted',expires_at:'2000-01-01T00:00:00Z'},writer);
+      const fresh=await automatic.call('memory_record',{workspace:w,kind:'issue',key:'synthetic.expired-key',title:'New issue',statement:'Current issue',basis:'asserted'},writer);assert.equal(fresh.item.status,'active');assert.equal((await store.read(w,expired.item.id)).status,'invalidated');
+      await automatic.call('memory_record',{workspace:w,kind:'decision',key:'synthetic.lifecycle-key',title:'Explicit alternative',statement:'A divergent assertion.',basis:'asserted',replace_key:false},writer);
+      await assert.rejects(record('Do not silently discard divergent assertions.'),{code:'AMBIGUITY'});
+    });
+    await t.test('Real Git broker enrolls automatically, sends hashes only, injects scope and withholds controller tools',async()=>{
+      const folder=await mkdtemp(tmpdir()+'/jovememory-broker-'),root=folder+'/repo';await mkdir(root);
+      const git=args=>execFileSync('git',['-C',root,...args],{stdio:['ignore','pipe','ignore']});
+      git(['init']);git(['remote','add','origin','https://github.com/example/synthetic-bridge.git']);
+      await writeFile(root+'/README.md','Synthetic broker source.');await writeFile(root+'/.env','Synthetic private source.');git(['add','README.md','.env']);
+      await symlink('/etc/hostname',root+'/outside');git(['add','outside']);
+      const token=randomBytes(32).toString('base64url'),controller={id:'synthetic-controller',role:'provisioner',workspaces:['*'],sha256:hash(token)};
+      const config={...c,reviewMode:'automatic',profiles:[controller]};const http=createApp(new Service(store,config),config).listen(0,'127.0.0.1');await new Promise(resolve=>http.once('listening',resolve));
+      const endpoint=`http://127.0.0.1:${http.address().port}/mcp`;await writeFile(folder+'/controller.token',token,{mode:0o600});await writeFile(folder+'/broker.json',JSON.stringify({endpoint,provisioner_token_file:folder+'/controller.token'}),{mode:0o600});
+      const client=new Client({name:'synthetic-bound-agent',version:'1'});
+      try {
+        const transport=new StdioClientTransport({command:process.execPath,args:[process.cwd()+'/src/project-bridge.mjs'],cwd:root,env:{...process.env,JOVEMEMORY_BROKER_CONFIG:folder+'/broker.json'},stderr:'pipe'});await client.connect(transport);
+        const catalog=await client.listTools();assert.ok(catalog.tools.some(x=>x.name==='memory_write'));assert.ok(!catalog.tools.some(x=>['memory_open_project','memory_overview','memory_cross_workspace'].includes(x.name)));assert.ok(!catalog.tools.find(x=>x.name==='memory_write').inputSchema.properties.workspace);
+        const status=(await client.callTool({name:'memory_connection_status',arguments:{}})).structuredContent;assert.equal(status.workspace,'synthetic-bridge');assert.equal(status.bound,true);
+        const source=(await client.callTool({name:'memory_sources',arguments:{limit:100}})).structuredContent;assert.deepEqual(source.sources.map(x=>x.locator),['README.md']);
+        const written=await client.callTool({name:'memory_write',arguments:{content:'Synthetic broker orchid knowledge.',source_refs:[{locator:'README.md',sha256:hash('Synthetic broker source.')}]}});assert.equal(written.structuredContent.workspace,'synthetic-bridge');
+        const denied=await client.callTool({name:'memory_read',arguments:{workspace:'synthetic-a',id:written.structuredContent.item.id}});assert.equal(denied.isError,true);
+        await writeFile(root+'/README.md','Updated synthetic broker source.');
+        const updated=await client.callTool({name:'memory_read',arguments:{id:written.structuredContent.item.id}});assert.equal(updated.structuredContent.item.lifecycle.status,'needs_revalidation');
+        assert.equal((await client.callTool({name:'memory_overview',arguments:{}})).isError,true);
+      }finally {await client.close();http.closeAllConnections();await new Promise(resolve=>http.close(resolve));await rm(folder,{recursive:true,force:true});}
+    });
     await t.test('Full snapshot backup includes media; scratch restore compares exact table fingerprints',async()=>{
       backupDir=await mkdtemp(tmpdir()+'/jovememory-backup-');
       await assert.rejects(externalDirectory(process.cwd()),{code:'BACKUP'});
@@ -363,7 +450,7 @@ test('Isolated database, object storage, MCP and backup lifecycle',async t=>{
       assert.equal((await call('memory_search_media',{workspace:'synthetic-a',query:'cobalt transcript'},reader)).results.length,0);
       await assert.rejects(call('memory_read_media',{workspace:'synthetic-a',id:mediaId},reader),{code:'MEDIA'});
     });
-    assert.equal(called.size,33,`Missing tools: ${Object.keys((await import('../src/schemas.mjs')).TOOLS).filter(x=>!called.has(x))}`);
+    assert.equal(called.size,43,`Missing tools: ${Object.keys((await import('../src/schemas.mjs')).TOOLS).filter(x=>!called.has(x))}`);
   } finally {
     if(server) {server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
     await store?.close();

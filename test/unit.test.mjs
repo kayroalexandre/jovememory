@@ -40,11 +40,11 @@ test('OpenRouter model roles default to the planned specialized matrix',()=>{
   assert.equal(models.knowledgeModel,'deepseek/deepseek-v4-flash');
   assert.equal(models.synthesisModel,'openrouter/free');
   assert.equal(models.inferenceFallbackModels[0],'deepseek/deepseek-v4-pro');
-  assert.equal(models.inferenceMaxInputPrice,0.25);assert.equal(models.inferenceMaxOutputPrice,1.50);
+  assert.equal(models.inferenceMaxInputPrice,undefined);assert.equal(models.inferenceMaxOutputPrice,undefined);
   assert.match(models.decisionEndpoint,/\/api\/alpha\/decisions$/);
 });
 test('Strict tools reject unknown fields and out-of-range limits without coercion',()=>{
-  assert.equal(Object.keys(TOOLS).length,33);
+  assert.equal(Object.keys(TOOLS).length,43);
   for(const value of [{workspace:'synthetic-a',query:'source',bogus:true},{workspace:'synthetic-a',query:'source',limit:'10'},{workspace:'synthetic-a',query:'source',limit:101}]) assert.equal(TOOLS.memory_search.schema.safeParse(value).success,false);
 });
 test('Ingestion hash commits to workspace, source and bytes; safe paths and fenced headings',()=>{
@@ -169,14 +169,14 @@ test('Free routing filters live zero-price text models and prefers configured ca
   assert.deepEqual(selectFreeModels(rows,[],200000),[]);
 });
 
-test('Native free routing tries preferred free models, validates citations and bounds paid fallback prices',async()=>{
-  const p=new Provider({enabled:true,key:'synthetic',synthesisModel:'openrouter/free',inferenceFallbackModels:['deepseek/deepseek-v4-pro','deepseek/deepseek-v4-flash'],inferenceMaxInputPrice:0.25,inferenceMaxOutputPrice:1.5});
+test('Native free routing tries preferred free models, validates citations and does not cap paid fallback prices',async()=>{
+  const p=new Provider({enabled:true,key:'synthetic',synthesisModel:'openrouter/free',inferenceFallbackModels:['deepseek/deepseek-v4-pro','deepseek/deepseek-v4-flash'],inferenceMaxInputPrice:0.001,inferenceMaxOutputPrice:0.001});
   p.freeModels=async()=>['synthetic/large-550b:free','synthetic/large-120b:free'];
   const requests=[];p.request=async(path,input)=>{requests.push(input);return {model:input.models?.[0] ?? input.model,choices:[{message:{content:JSON.stringify({summary:'Synthetic compact evidence',cited_ids:[input.model==='deepseek/deepseek-v4-pro'?'source':'unknown']})}}]};};
   const result=await p.synthesize('query',[{id:'source',content:'Synthetic source'}]);
   assert.deepEqual(requests[0].models,['synthetic/large-550b:free','synthetic/large-120b:free']);assert.equal(requests[1].model,'openrouter/free');
   assert.deepEqual(requests[0].provider.max_price,{prompt:0,completion:0,request:0});assert.deepEqual(requests[1].provider.max_price,{prompt:0,completion:0,request:0});
-  assert.deepEqual(requests[2].provider.max_price,{prompt:0.25,completion:1.5,request:0});assert.equal(requests[2].response_format.type,'json_schema');
+  assert.equal(requests[2].provider.max_price,undefined);assert.equal(requests[2].provider.sort,'price');assert.equal(requests[2].response_format.type,'json_schema');
   assert.equal(result.model,'deepseek/deepseek-v4-pro');assert.equal(result.routing.paid_fallback,true);
   requests.length=0;p.request=async(path,input)=>{requests.push(input);return {model:'synthetic/large-550b:free',usage:{cost:0},choices:[{message:{content:JSON.stringify({summary:'Synthetic evidence',cited_ids:['source']})}}]};};
   const free=await p.synthesize('query',[{id:'source',content:'Synthetic source'}]);assert.equal(free.routing.tier,'free');assert.equal(free.routing.paid_fallback,false);assert.equal(requests.length,1);
@@ -190,4 +190,47 @@ test('Unavailable model catalog uses the free router without inventing its effec
   const output=await p.synthesize('query',[{id:'source',content:'Synthetic'}]);assert.equal(output.model,'synthetic/actual:free');assert.equal(requests[0].model,'openrouter/free');
   p.request=async()=>({choices:[{message:{content:'{"summary":"Synthetic","cited_ids":["source"]}'}}]});
   await assert.rejects(p.synthesize('query',[{id:'source',content:'Synthetic'}]),{code:'PROVIDER'});
+});
+
+test('Git identity unifies SSH/HTTPS, distinguishes owners and rejects credential-bearing origins',async()=>{
+  const {remoteIdentity}=await import('../src/repository.mjs');
+  const a=remoteIdentity('git@github.com:example/Synthetic.App.git');
+  assert.equal(a.repository_name,'Synthetic.App');
+  assert.equal(a.repository_id,remoteIdentity('https://github.com/EXAMPLE/synthetic.app').repository_id);
+  assert.notEqual(a.repository_id,remoteIdentity('https://github.com/other/synthetic.app').repository_id);
+  for(const value of ['https://user:password@github.com/example/synthetic','https://github.com/example/synthetic?token=value','/tmp/local','git@github.com:example/../synthetic'])assert.throws(()=>remoteIdentity(value),{code:'REPOSITORY'});
+});
+
+test('Lifecycle separates observations from truth and age does not invalidate facts',async()=>{
+  const {lifecycle}=await import('../src/lifecycle.mjs');
+  const item={status:'active',created_at:'2000-01-01',metadata:{source_refs:[{locator:'README.md',sha256:hash('one')}]}};
+  const sources=new Map([['README.md',{sha256:hash('one'),present:true}]]);
+  assert.equal(lifecycle(item,sources).status,'matches_observation');assert.equal(lifecycle(item,sources).truth_verified,false);
+  sources.get('README.md').sha256=hash('two');assert.equal(lifecycle(item,sources).status,'needs_revalidation');
+  sources.get('README.md').present=false;assert.equal(lifecycle(item,sources).source_diagnostics[0].status,'missing');
+  assert.equal(lifecycle({...item,status:'invalidated'},sources).status,'historical');
+  assert.equal(lifecycle({...item,valid_until:'2000-01-01'},sources).status,'expired');
+});
+
+test('Signed project credentials validate signature, expiration, audience and revocation epoch',async()=>{
+  const {issueProjectToken,authenticateProject}=await import('../src/project-auth.mjs');
+  const key=randomBytes(32),project={workspace:'Synthetic.App',repository_id:hash('repository'),credential_epoch:1};
+  const settings={projectKey:key,profiles:[]},store={project:async()=>project};
+  const {token}=await issueProjectToken(project,key);
+  const profile=await authenticateProject('Bearer '+token,settings,store);assert.deepEqual(profile.workspaces,['Synthetic.App']);assert.equal(profile.role,'writer');
+  assert.equal(await authenticateProject('Bearer '+token,{...settings,projectKey:randomBytes(32)},store),null);
+  const parts=token.split('.');parts[1]=Buffer.from(JSON.stringify({workspace:'another',role:'admin'})).toString('base64url');assert.equal(await authenticateProject('Bearer '+parts.join('.'),settings,store),null);
+  project.credential_epoch=2;assert.equal(await authenticateProject('Bearer '+token,settings,store),null);
+  const expired=await issueProjectToken(project,key,-10);assert.equal(await authenticateProject('Bearer '+expired.token,settings,store),null);
+  const {SignJWT}=await import('jose');const wrong=await new SignJWT({workspace:project.workspace,repository_id:project.repository_id,epoch:2,role:'writer'}).setProtectedHeader({alg:'HS256',typ:'JWT'}).setIssuer('jovememory-project').setAudience('wrong').setSubject('project-'+project.repository_id.slice(0,24)).setJti('synthetic').setIssuedAt().setExpirationTime('1h').sign(key);
+  assert.equal(await authenticateProject('Bearer '+wrong,settings,store),null);
+});
+
+test('Native project key derivation is domain-separated, stable and rotates with the private runtime credential',()=>{
+  const token=randomBytes(32).toString('hex');const url=new URL('postgresql://127.0.0.1:5432/synthetic');url.username='synthetic';url.password=token;
+  const profile={id:'synthetic-base',role:'writer',workspaces:['synthetic'],sha256:hash('synthetic')},controller={id:'synthetic-controller',role:'provisioner',workspaces:['*'],sha256:hash('controller')};
+  const env={DATABASE_URL:url.href,AUTH_PROFILES:JSON.stringify([profile]),CONTROL_AUTH_PROFILES:JSON.stringify([controller]),PROJECT_TOKEN_KEY_MODE:'database-derived'};
+  const first=config(env);assert.deepEqual(first.profiles,[profile,controller]);assert.equal(first.projectKey.length,32);assert.notEqual(first.projectKey.toString('hex'),token);
+  assert.deepEqual(first.projectKey,config(env).projectKey);url.password=randomBytes(32).toString('hex');assert.notDeepEqual(first.projectKey,config({...env,DATABASE_URL:url.href}).projectKey);
+  const explicit=randomBytes(32).toString('hex');assert.equal(config({...env,PROJECT_TOKEN_SECRET:explicit}).projectKey.toString('hex'),explicit);
 });

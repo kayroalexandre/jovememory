@@ -47,3 +47,22 @@ Inferência é apoio explícito ao agente: `synthesize`, `enrich` e `summarize` 
 ## Contrato 0.4.0
 
 Síntese continua opt-in e muda de modelo primário fixo para rota lógica gratuita. `synthesis.model` identifica o modelo efetivo retornado pelo provedor; `synthesis.routing` declara modelo solicitado, modelo efetivo, classe de rota e uso de fallback pago. Preferências gratuitas são filtradas pelo catálogo e preços zero; teto de preço pago é imposto pelo roteamento nativo. A escolha de outro modelo dentro da rota gratuita não gera `synthesis_fallback`; esse marcador informa fallback pago. Orçamento, hashes, releitura integral e validação de citações permanecem.
+
+## Contrato 0.5.0
+
+43 ferramentas. Dez contratos complementam matrícula/revogação de projeto,
+overview global, guia de agente, observações/fontes, feed de mudanças, diagnóstico
+de manutenção, revalidação e retirement. Registry e credenciais são geridas por
+controlador confiável, sem ampliar o escopo cotidiano do agente. Workspace usa o
+nome do repositório e recusa identidade conflitante. `memory_record.replace_key`
+é verdadeiro por padrão; `false` conserva explicitamente afirmações divergentes.
+Divergências múltiplas não são apagadas por uma substituição silenciosa. Registros
+expirados podem receber sucessor com histórico preservado. `source_refs` são
+opcionais para compatibilidade; ausência delas aparece como `untracked`.
+
+Busca/contexto/releitura/retomada/projeto incluem diagnóstico de fontes;
+`memory_maintenance` inclui itens ativos expirados que a recuperação normal exclui.
+Fontes alteradas permanecem legíveis com aviso até o agente verificar, atualizar ou
+retirar o fato. `memory_changes` traz sequências e metadados de mutação, sem snapshots
+de corpus; cursor/limite declaram a página. Fallback pago não recebe `max_price`;
+variáveis de preço antigas são ignoradas. Tentativas gratuitas conservam teto zero.

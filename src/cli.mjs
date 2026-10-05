@@ -19,15 +19,15 @@ try {
     catch {await s3.send(new CreateBucketCommand({Bucket:c.s3.bucket}));}
     console.log('Local runtime role and private bucket ready. Provision an explicit workspace next.');
   } else if(command==='workspace') {
-    const name=args[0];ensure(/^[a-z0-9][a-z0-9_-]{0,62}$/.test(name || ''),'INPUT','Supply an explicit workspace name.');
-    ensure(process.env.MIGRATION_DATABASE_URL,'CONFIG','Administrative database configuration is required.');
-    const client=new pg.Client({connectionString:process.env.MIGRATION_DATABASE_URL});await client.connect();
-    try {await client.query('INSERT INTO workspaces(name) VALUES($1) ON CONFLICT DO NOTHING',[name]);}finally {await client.end();}
+    const name=args[0];ensure(/^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$/.test(name || ''),'INPUT','Supply an explicit workspace name.');
+    const c=config(),profile=c.profiles.find(p=>p.role==='admin' && (p.workspaces.includes('*') || p.workspaces.includes(name)));
+    ensure(profile,'CONFIG','Configure an administrative profile authorized for this workspace.');
+    store=new Store(c.databaseUrl);await new Service(store,c).call('memory_create_workspace',{workspace:name},profile);
     console.log('Workspace provisioned.');
   } else if(command==='profile') {
     const [id,role,...workspaces]=args;
-    ensure(/^[a-z0-9_-]{1,64}$/.test(id || '') && ['reader','writer','reviewer','admin'].includes(role) && workspaces.length && workspaces.every(w=>/^(\*|[a-z0-9][a-z0-9_-]{0,62})$/.test(w)),
-      'INPUT','Usage: profile <id> <reader|writer|reviewer|admin> <workspace...>');
+    ensure(/^[a-z0-9_-]{1,64}$/.test(id || '') && ['reader','writer','reviewer','admin','provisioner','observer'].includes(role) && workspaces.length && workspaces.every(w=>/^(\*|[A-Za-z0-9][A-Za-z0-9_.-]{0,99})$/.test(w)),
+      'INPUT','Usage: profile <id> <reader|writer|reviewer|admin|provisioner|observer> <workspace...>');
     await mkdir('private',{recursive:true,mode:0o700});await chmod('private',0o700);
     const token=randomBytes(32).toString('base64url');
     await writeFile(`private/${id}.token`,token+'\n',{mode:0o600,flag:'wx'});

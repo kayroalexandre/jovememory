@@ -1,5 +1,6 @@
 import pg from 'pg';
 import { randomUUID } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import { ensure, hash } from './config.mjs';
 const active = alias => `${alias}.status='active' AND (${alias}.valid_from IS NULL OR ${alias}.valid_from <= $2::timestamptz) AND (${alias}.valid_until IS NULL OR ${alias}.valid_until > $2::timestamptz)`;
 const clean = row => { if (!row) return null; const {embedding, search, page_time, ...result}=row; return result; };
@@ -11,8 +12,8 @@ export class Store {
     const role=(await this.pool.query('SELECT rolsuper,rolbypassrls FROM pg_roles WHERE rolname=current_user')).rows[0];
     ensure(role && !role.rolsuper && !role.rolbypassrls,'CONFIG','Runtime must use a non-administrative database role.');
     const result=await this.pool.query("SELECT name FROM schema_migrations ORDER BY name");
-    ensure(result.rows.at(-1)?.name==='002.sql','SCHEMA','Run the declared migrations before starting.');
-    return {schema:2,database:'ready'};
+    ensure(result.rows.at(-1)?.name==='003.sql','SCHEMA','Run the declared migrations before starting.');
+    return {schema:3,database:'ready'};
   }
   async workspaces() { return (await this.pool.query('SELECT name FROM workspaces ORDER BY name')).rows.map(r=>r.name); }
   async transaction(workspace, fn, {create=false}={}) {
@@ -37,6 +38,108 @@ export class Store {
       return {workspace,provisioned:true};
     },{create:true});
   }
+  async project(workspace) {return this.transaction(workspace,async c=>(await c.query('SELECT * FROM projects WHERE workspace=$1',[workspace])).rows[0] || null);}
+  async enroll(workspace,repositoryId,repositoryName,actor) {
+    return this.transaction(workspace,async c=>{
+      const prior=(await c.query('SELECT * FROM projects WHERE workspace=$1 FOR UPDATE',[workspace])).rows[0];
+      ensure(!prior || prior.repository_id===repositoryId,'PROJECT_COLLISION','Workspace is already bound to another repository; no credentials were issued.');
+      if(prior) return prior;
+      const project=(await c.query('INSERT INTO projects(workspace,repository_id,repository_name) VALUES($1,$2,$3) RETURNING *',[workspace,repositoryId,repositoryName])).rows[0];
+      await this.audit(c,workspace,'project_enroll',actor,null,{repository_id:repositoryId,repository_name:repositoryName});return project;
+    },{create:true});
+  }
+  async revokeProject(workspace,actor,reason) {
+    return this.transaction(workspace,async c=>{
+      const row=(await c.query('UPDATE projects SET credential_epoch=credential_epoch+1 WHERE workspace=$1 RETURNING credential_epoch',[workspace])).rows[0];
+      ensure(row,'PROJECT','Project is not enrolled.');await this.audit(c,workspace,'project_revoke',actor,null,{reason});return row;
+    });
+  }
+  async sourceMap(workspace) {return this.transaction(workspace,async c=>new Map((await c.query('SELECT * FROM sources WHERE workspace=$1',[workspace])).rows.map(x=>[x.locator,x])));}
+  async sources(workspace,{limit=20,after=''}={}) {
+    return this.transaction(workspace,async c=>{
+      const rows=(await c.query('SELECT * FROM sources WHERE workspace=$1 AND locator>$2 ORDER BY locator LIMIT $3',[workspace,after,limit+1])).rows;
+      return {sources:rows.slice(0,limit),next_after:rows.length>limit?rows[limit-1].locator:null};
+    });
+  }
+  async syncSources(workspace,entries,revision,complete,actor) {
+    return this.transaction(workspace,async c=>{
+      await c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[workspace+':sources']);
+      const before=(await c.query('SELECT * FROM sources WHERE workspace=$1',[workspace])).rows;
+      const incoming=new Map(entries.map(x=>[x.locator,x]));
+      ensure(incoming.size===entries.length && entries.every(x=>x.present?Boolean(x.sha256):x.sha256===null),'INPUT','Source locators must be unique and presence must match the hash.');
+      if(complete) for(const old of before) if(!incoming.has(old.locator)) incoming.set(old.locator,{locator:old.locator,sha256:null,present:false});
+      const changed=[...incoming.values()].filter(x=>{const old=before.find(y=>y.locator===x.locator);return !old || old.present!==x.present || old.sha256!==x.sha256;}).map(x=>x.locator);
+      await c.query(`INSERT INTO sources(workspace,locator,sha256,present,revision)
+        SELECT $1,locator,sha256,present,$3 FROM jsonb_to_recordset($2::jsonb) AS x(locator text,sha256 text,present boolean)
+        ON CONFLICT(workspace,locator) DO UPDATE SET sha256=EXCLUDED.sha256,present=EXCLUDED.present,revision=EXCLUDED.revision,observed_at=now()`,[workspace,JSON.stringify([...incoming.values()]),revision || null]);
+      if(changed.length) await this.audit(c,workspace,'sources_change',actor,null,{locators:changed,revision:revision || null,complete});
+      return {observed:incoming.size,changed:changed.length,revision:revision || null,source_truth_verified:false};
+    });
+  }
+  async validateSources(c,workspace,refs) {
+    if(!refs?.length) return;
+    ensure(new Set(refs.map(x=>x.locator)).size===refs.length,'INPUT','Source references must be unique.');
+    const rows=(await c.query('SELECT * FROM sources WHERE workspace=$1 AND locator=ANY($2::text[]) FOR SHARE',[workspace,refs.map(x=>x.locator)])).rows;
+    ensure(refs.every(ref=>rows.some(s=>s.locator===ref.locator && s.present && s.sha256===ref.sha256)),'SOURCE_CHANGED','References require observed matching current source hashes.');
+  }
+  async revalidate(workspace,id,contentHash,refs,actor,reason) {
+    return this.transaction(workspace,async c=>{
+      const old=clean((await c.query('SELECT * FROM items WHERE workspace=$1 AND id=$2 FOR UPDATE',[workspace,id])).rows[0]);
+      ensure(old?.status==='active' && old.content_hash===contentHash,'CONFLICT','Active memory changed before revalidation.');
+      ensure(refs.length,'INPUT','Revalidation requires observed sources.');await this.validateSources(c,workspace,refs);
+      const metadata={...old.metadata,source_refs:refs,source_revalidated_at:new Date().toISOString()};
+      await c.query('UPDATE items SET metadata=$3 WHERE workspace=$1 AND id=$2',[workspace,id,metadata]);
+      await this.audit(c,workspace,'revalidate',actor,id,{reason,source_refs:refs,content_hash:contentHash});return {id,source_refs:refs,truth_verified:false};
+    });
+  }
+  async record(workspace,input,actor,automatic,replaceKey) {
+    return this.transaction(workspace,async c=>{
+      await c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[workspace+':record:'+input.metadata.kind+':'+input.metadata.key]);
+      const rows=replaceKey?(await c.query("SELECT * FROM items WHERE workspace=$1 AND kind='record' AND status='active' AND metadata->>'kind'=$2 AND metadata->>'key'=$3 ORDER BY id FOR UPDATE",[workspace,input.metadata.kind,input.metadata.key])).rows:[];
+      ensure(rows.length<=1,'AMBIGUITY','Multiple active records share this key; resolve them explicitly before replacement.');
+      const old=rows[0];
+      if(old && old.content_hash===hash(input.content) && isDeepStrictEqual(old.metadata,JSON.parse(JSON.stringify(input.metadata)))) return clean(old);
+      if(old?.valid_until && old.valid_until<=new Date()) {
+        await c.query("UPDATE items SET status='invalidated',reason='Expired keyed record replaced.' WHERE workspace=$1 AND id=$2",[workspace,old.id]);
+        await this.audit(c,workspace,'retire',actor,old.id,{reason:'Expired keyed record replaced.'});
+        return this.create(c,workspace,{...input,metadata:{...input.metadata,previous_record_id:old.id}},actor,automatic);
+      }
+      return this.create(c,workspace,{...input,supersedes:old?.id},actor,automatic);
+    });
+  }
+  async changes(workspace,{limit=20,after=0}={}) {
+    return this.transaction(workspace,async c=>{
+      const rows=(await c.query(`SELECT sequence,operation,item_id,actor,created_at,
+        jsonb_build_object('reason',payload->>'reason','predecessor',payload->>'predecessor','invalidated_ids',payload->'invalidated_ids','revision',payload->>'revision','locators',payload->'locators') AS details
+        FROM audit WHERE workspace=$1 AND sequence>$2 ORDER BY sequence LIMIT $3`,[workspace,after,limit+1])).rows;
+      return {changes:rows.slice(0,limit),next_after:rows.length>limit?Number(rows[limit-1].sequence):null,last_sequence:rows.length?Number(rows[Math.min(rows.length,limit)-1].sequence):after};
+    });
+  }
+  async observe(workspace,data) {
+    return this.transaction(workspace,async c=>{
+      await c.query('INSERT INTO telemetry(workspace,tool,success,error_code,duration_ms,model,route) VALUES($1,$2,$3,$4,$5,$6,$7)',[workspace,data.tool,data.success,data.error_code || null,Math.round(data.duration_ms),data.model || null,data.route || null]);
+      await c.query("DELETE FROM telemetry WHERE workspace=$1 AND created_at<now()-interval '30 days'",[workspace]);
+    });
+  }
+  async projectMetrics(workspace) {
+    return this.transaction(workspace,async c=>({
+      project:(await c.query('SELECT repository_name,created_at FROM projects WHERE workspace=$1',[workspace])).rows[0] || null,
+      lifecycle:(await c.query(`SELECT count(*) FILTER (WHERE i.status='active')::int AS active,
+        count(*) FILTER (WHERE i.status='invalidated')::int AS historical,
+        count(*) FILTER (WHERE i.status='proposed')::int AS proposed,
+        count(*) FILTER (WHERE i.status='active' AND valid_until<=now())::int AS expired,
+        count(*) FILTER (WHERE i.status='active' AND embedding IS NULL)::int AS embedding_backlog,
+        count(*) FILTER (WHERE i.status='active' AND jsonb_array_length(COALESCE(metadata->'source_refs','[]'))=0)::int AS untracked,
+        count(*) FILTER (WHERE i.status='active' AND EXISTS(SELECT 1 FROM jsonb_array_elements(COALESCE(i.metadata->'source_refs','[]')) r
+          LEFT JOIN sources s ON s.workspace=i.workspace AND s.locator=r->>'locator' WHERE s.locator IS NULL OR NOT s.present OR s.sha256<>r->>'sha256'))::int AS needs_revalidation
+        FROM items i WHERE i.workspace=$1`,[workspace])).rows[0],
+      sources:(await c.query('SELECT count(*)::int AS observed,count(*) FILTER (WHERE NOT present)::int AS missing,max(observed_at) AS last_observed_at FROM sources WHERE workspace=$1',[workspace])).rows[0],
+      activity:(await c.query('SELECT max(created_at) AS last_mutation_at,count(*)::int AS audited_mutations FROM audit WHERE workspace=$1',[workspace])).rows[0],
+      usage:(await c.query(`SELECT count(*)::int AS calls,count(*) FILTER (WHERE NOT success)::int AS failures,
+        count(*) FILTER (WHERE route='paid_fallback')::int AS paid_fallbacks,percentile_cont(0.95) WITHIN GROUP (ORDER BY duration_ms) AS p95_ms
+        FROM telemetry WHERE workspace=$1 AND created_at>now()-interval '7 days'`,[workspace])).rows[0]
+    }));
+  }
   async audit(c, workspace, operation, actor, itemId, payload) {
     await c.query('INSERT INTO audit(workspace,operation,actor,item_id,payload) VALUES($1,$2,$3,$4,$5)',[workspace,operation,actor,itemId,payload]);
   }
@@ -48,6 +151,8 @@ export class Store {
     });
   }
   async create(c, workspace, input, actor, automatic=false) {
+    if(input.source_refs) input={...input,metadata:{...input.metadata,source_refs:input.source_refs}};
+    await this.validateSources(c,workspace,input.metadata?.source_refs);
     const id=input.id || randomUUID(); const digest=hash(input.content);
     const existing=await c.query('SELECT id FROM items WHERE workspace=$1 AND (id=$2 OR (content_hash=$3 AND status=\'rejected\'))',[workspace,id,digest]);
     ensure(!existing.rowCount,'EXISTS','ID already exists or identical content was rejected.');
@@ -75,15 +180,15 @@ export class Store {
     const fn=async c=>(await c.query(`SELECT * FROM items i WHERE workspace=$1 AND ${active('i')} AND id=ANY($3::uuid[]) ORDER BY id`,[workspace,asOf,ids])).rows.map(clean);
     return client ? fn(client) : this.transaction(workspace,fn);
   }
-  async page(workspace,{status='active',kind,node,limit=20,cursor,as_of=new Date().toISOString()}={}) {
-    const scope=hash(JSON.stringify({workspace,status,kind:kind || null,node:node || null,as_of}));
+  async page(workspace,{status='active',kind,node,limit=20,cursor,as_of=new Date().toISOString(),include_ineligible=false}={}) {
+    const scope=hash(JSON.stringify({workspace,status,kind:kind || null,node:node || null,as_of,include_ineligible}));
     let after=null;
     if(cursor) { try {after=JSON.parse(Buffer.from(cursor,'base64url'));} catch {} ensure(after?.scope===scope && typeof after.time==='string' && /^[a-f0-9-]{36}$/.test(after.id),'CURSOR','Cursor does not match these filters and as_of.'); }
     return this.transaction(workspace,async c=>{
-      const args=[workspace,as_of,status,kind || null,node || null,after?.time || null,after?.id || null,limit+1];
+      const args=[workspace,as_of,status,kind || null,node || null,after?.time || null,after?.id || null,limit+1,include_ineligible];
       const r=await c.query(`SELECT *,to_char(created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS page_time FROM items i
         WHERE workspace=$1 AND status=$3 AND ($4::text IS NULL OR kind=$4) AND ($5::text IS NULL OR node=$5)
-        AND ($3!='active' OR (${active('i')})) AND ($6::timestamptz IS NULL OR (created_at,id)<($6::timestamptz,$7::uuid))
+        AND ($9::boolean OR $3!='active' OR (${active('i')})) AND ($6::timestamptz IS NULL OR (created_at,id)<($6::timestamptz,$7::uuid))
         ORDER BY created_at DESC,id DESC LIMIT $8`,args);
       const rows=r.rows.slice(0,limit), last=rows.at(-1);
       return {items:rows.map(clean),as_of,next_cursor:r.rows.length>limit ? Buffer.from(JSON.stringify({scope,time:last.page_time,id:last.id})).toString('base64url'):null};
@@ -124,6 +229,7 @@ export class Store {
       const old=clean((await c.query('SELECT * FROM items WHERE workspace=$1 AND id=$2 FOR UPDATE',[workspace,id])).rows[0]);
       ensure(old && !['deleted','rejected'].includes(old.status),'STATE','Item is unavailable for mutation.');
       if(operation==='delete') await c.query("UPDATE items SET status='deleted',reason=$3 WHERE workspace=$1 AND id=$2",[workspace,id,payload.reason]);
+      if(operation==='retire') {ensure(old.status==='active','STATE','Only active memories can retire.');await c.query("UPDATE items SET status='invalidated',reason=$3 WHERE workspace=$1 AND id=$2",[workspace,id,payload.reason]);}
       if(operation==='move') { ensure(['active','invalidated'].includes(old.status),'STATE','Only reviewed items can move.');
         await c.query('UPDATE items SET node=$3 WHERE workspace=$1 AND id=$2',[workspace,id,payload.node]); }
       if(operation==='feedback') { ensure(old.status==='active','STATE','Feedback requires an active item.');

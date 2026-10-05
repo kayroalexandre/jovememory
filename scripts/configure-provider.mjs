@@ -28,7 +28,6 @@ const updates={
   SYNTHESIS_MODEL:'openrouter/free',
   FREE_INFERENCE_PREFERENCES:'nvidia/nemotron-3-ultra-550b-a55b:free,nvidia/nemotron-3-super-120b-a12b:free,google/gemma-4-31b-it:free',
   INFERENCE_FALLBACK_MODELS:'deepseek/deepseek-v4-pro,deepseek/deepseek-v4-flash,xiaomi/mimo-v2.5',
-  INFERENCE_MAX_INPUT_PRICE:'0.25',INFERENCE_MAX_OUTPUT_PRICE:'1.50'
 };
 const original=await readFile(envPath,'utf8');
 const lines=original.split('\n');

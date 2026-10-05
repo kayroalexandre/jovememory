@@ -59,7 +59,8 @@ Configure pelo Railway:
 | `SYNTHESIS_MODEL` | `openrouter/free`; inferência de contexto seletiva |
 | `FREE_INFERENCE_PREFERENCES` | IDs gratuitos preferidos, separados por vírgula; filtrados pelo catálogo atual |
 | `INFERENCE_FALLBACK_MODELS` | `deepseek/deepseek-v4-pro,deepseek/deepseek-v4-flash,xiaomi/mimo-v2.5` |
-| `INFERENCE_MAX_INPUT_PRICE` / `INFERENCE_MAX_OUTPUT_PRICE` | `0.25` / `1.50`, em USD por milhão de tokens de entrada/saída |
+| `PROJECT_TOKEN_SECRET` | Chave aleatória de 256 bits em hex, segredo nativo para enrollment dinâmico |
+| `PROJECT_TOKEN_SECRET_FILE` | Alternativa local: caminho externo a arquivo privado 600 |
 | `S3_ENDPOINT` | `${{Media.ENDPOINT}}` |
 | `S3_BUCKET` | `${{Media.BUCKET}}` — o nome técnico do S3, não o rótulo exibido no Railway |
 | `S3_ACCESS_KEY_ID` | `${{Media.ACCESS_KEY_ID}}` |
@@ -118,6 +119,51 @@ Na configuração local padrão, a API usa porta 3007 para reduzir conflito com 
 
 ## Validar a rota gratuita — 0.4.0
 
-Depois de alterar variáveis, faça build novo da fonte e confirme `memory_capabilities.models.synthesis`, preferências e tetos de preço. Use conteúdo sintético para `memory_context(synthesize:true)`; confira `synthesis.model` efetivo, `synthesis.routing.tier`, citações e degradação. `free` significa tentativa sob teto zero; `paid_fallback` declara uso do fallback pago. O roteador gratuito geral não é um ranking de inteligência. O catálogo atual e os preços devem ser revistos ao trocar preferências, e limites de preço continuam aplicados a cada chamada.
+Depois de alterar variáveis, faça build novo da fonte e confirme `memory_capabilities.models.synthesis`, preferências e ausência de teto pago. Use conteúdo sintético para `memory_context(synthesize:true)`; confira `synthesis.model` efetivo, `synthesis.routing.tier`, citações e degradação. `free` significa tentativa sob teto zero; `paid_fallback` declara uso do fallback pago. O roteador gratuito geral não é um ranking de inteligência. O catálogo atual e os preços devem ser revistos ao trocar preferências, e limites de preço continuam aplicados a cada chamada.
 
 Associe cada cliente ao workspace do próprio projeto e confirme o perfil antes de gravar. O workspace da aplicação de memória guarda somente contexto da própria aplicação; implementação e backlog de clientes pertencem aos workspaces correspondentes. Auditoria e versões históricas são preservadas quando uma nota é realocada; busca normal exclui a origem apagada. Não trate a memória da aplicação como workspace global para projetos sem configuração.
+
+## Conector automático e observatório — 0.5.0
+
+Aplique migration 003 antes do runtime. Configure a chave aleatória de assinatura
+com `PROJECT_TOKEN_SECRET` no Railway; no WSL use `PROJECT_TOKEN_SECRET_FILE` para
+arquivo externo 600. Não reutilize chave OpenRouter, senha de banco ou token MCP.
+O controlador precisa de perfil `provisioner`, escopo declarado e token externo.
+`observer` é um perfil independente que só lê overview global; ele não possui
+permissões reader, writer ou admin. Preserve os perfis existentes ao acrescentar
+os novos hashes em `EXTRA_AUTH_PROFILES`.
+
+O arquivo externo `~/.config/jovememory/broker.json` guarda endpoint e caminho do
+token de controlador. Registre o processo `node /caminho/instalacao/src/project-bridge.mjs`
+como MCP local do cliente, com cwd do projeto e ambiente `JOVEMEMORY_BROKER_CONFIG`.
+No OpenCode 2.0.23, o processo local recebe o diretório da localização efetiva;
+configurações antigas por projeto que substituem o servidor global devem ser
+reconciliadas. Segredos/configurações privadas nunca pertencem ao Git do projeto.
+
+Ao conectar, o conector cria/vincula workspace, obtém token de um dia em memória,
+observa arquivos versionados e expõe catálogo scoped. Um processo por projeto
+continua conferindo fontes a cada minuto. Fechar o cliente encerra essa observação;
+produção não tem acesso independente ao filesystem WSL. Limite: 5000 fontes por
+observação e 16 MiB por arquivo; symlinks, caminhos privados e arquivos não versionados
+não são enviados. Observação parcial não marca arquivos omitidos como apagados.
+
+Confirme `memory_connection_status.bound`, `memory_capabilities.profile`, criação
+idempotente e negativa de outro workspace. Overview global exige perfil observer
+ou admin; nunca entregue token admin/provisioner ao modelo via catálogo ou resposta.
+A revogação incrementa epoch e derruba credenciais emitidas, sem remover conteúdo.
+Controlador autorizado pode reconectar e emitir credencial nova; revogar controlador
+ou rotacionar sua configuração é operação independente.
+
+Não existe teto pago de inferência desde 0.5.0. A seleção permanece barata e
+`provider.sort=price`; free usa preços zero. Timeout, disponibilidade, contrato JSON
+ou saldo do provedor ainda podem degradar síntese e não são corrigidos pela remoção
+do teto. Compare classe da rota efetiva, não o nome lógico do roteador.
+
+
+O modo nativo `PROJECT_TOKEN_KEY_MODE=database-derived` deriva uma chave de
+assinatura com HKDF-SHA256, domínio exclusivo e identidade do banco, a partir da
+credencial runtime privada já gerida pelo Railway. Não usa a senha diretamente
+como chave e não exporta o material derivado. Rotacionar essa credencial invalida
+JWTs antigos. Uma chave independente em `PROJECT_TOKEN_SECRET`/arquivo externo
+tem prioridade e permite rotação separada. `CONTROL_AUTH_PROFILES` acrescenta
+controlador/observer sem sobrescrever perfis existentes.
