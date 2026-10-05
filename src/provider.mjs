@@ -40,7 +40,10 @@ export class Provider {
     } finally { this.inflight--; }
   }
   async request(path,payload) {
-    const base=this.options.endpoint.replace(/\/$/,'');
+    const c=this.options;
+    ensure(c.enabled && c.key,'PROVIDER_DISABLED','Cloud provider is disabled or not configured.');
+    ensure(c.endpoint,'PROVIDER_DISABLED','Cloud provider endpoint is not configured.');
+    const base=c.endpoint.replace(/\/$/,'');
     return this.post(`${base}/${path}`,payload);
   }
   async chatJson(model,system,data,maxTokens=1024,fallback=[]) {
