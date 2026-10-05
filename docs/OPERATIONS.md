@@ -6,7 +6,20 @@ Use o fluxo de instalação do README. Compose é exclusivo do desenvolvimento: 
 
 `local:init` gera credenciais. `migrate` exige `MIGRATION_DATABASE_URL`. `cli -- setup-local` habilita a role runtime com senha própria e cria apenas o bucket local declarado. `cli -- workspace <nome>` provisiona um workspace explícito. `npm start` verifica schema e abre HTTP; `npm run mcp` abre stdio com `STDIO_PROFILE` configurado.
 
-Para o provedor local, a configuração gerada aponta `PROVIDER_API_KEY_FILE` para `private/openrouter.key`. Esse arquivo é ignorado pelo Git e deve permanecer com permissão 600. No WSL, grave a chave sem colocá-la no histórico do shell com `read -s -p "OpenRouter key: " OPENROUTER_API_KEY; printf '%s\\n' "$OPENROUTER_API_KEY" > private/openrouter.key; chmod 600 private/openrouter.key; unset OPENROUTER_API_KEY; echo`. Depois execute `npm run provider:enable`; o comando valida o arquivo privado e atualiza somente a configuração não secreta do provedor no `.env`.
+A chave local fica fora do checkout, em `~/.config/jovememory/secrets/openrouter.key` (diretório 700, arquivo 600). O `.env` guarda apenas o caminho absoluto em `PROVIDER_API_KEY_FILE`. Para cadastrá-la sem exibição ou histórico:
+
+```sh
+mkdir -p ~/.config/jovememory/secrets
+chmod 700 ~/.config/jovememory/secrets
+read -rs -p "OpenRouter key: " provider_key
+printf '%s\n' "$provider_key" > ~/.config/jovememory/secrets/openrouter.key
+chmod 600 ~/.config/jovememory/secrets/openrouter.key
+unset provider_key
+printf '\n'
+npm run provider:enable
+```
+
+O comando de ativação recusa um arquivo dentro do projeto, inclusive por symlink. `ENABLE_PROVIDER=true` sem chave utilizável bloqueia a inicialização; cadastrar a variável vazia não basta. Também aceita `PROVIDER_API_KEY_FILE` externo explicitamente definido no processo. Nunca copie a chave para o repositório ou para o `.env`.
 
 Para criar perfis de escopo restrito, use `npm run cli -- profile <id> <reader|writer|reviewer|admin> <workspace...>`. O token e o JSON contendo seu hash ficam em `private/`. Adicione esse JSON a `AUTH_PROFILES` através de configuração privada e reinicie. `*` dá acesso a todos os workspaces; prefira nomes explícitos em produção. Perfis locais de bootstrap usam `*` por conveniência de desenvolvimento, não são copiados para produção.
 
@@ -55,7 +68,9 @@ No primeiro provisionamento, deixar `DATABASE_URL` ausente ativa bootstrap: migr
 
 Provisionar o primeiro workspace requer uma operação administrativa explícita. No primeiro deploy, pode-se executar um único pre-deploy `npm run migrate && npm run cli -- workspace <nome-autorizado>` na configuração privada do serviço. Depois de observar sucesso, restaurar o pre-deploy para `npm run migrate`. O comando é idempotente e não cria conteúdo. Não mantenha nomes de workspaces pessoais em configuração pública. Redeploy de um build existente pode conservar o snapshot anterior de configurações: após mudanças, confirme os comandos nos logs de um deploy novo pela fonte GitHub.
 
-O domínio deve apontar apenas para o serviço HTTP. Banco/S3 não têm páginas públicas. Um deploy só é operacional depois de migrations, healthcheck, `tools/list`, chamada MCP autenticada, recusa de chamada anônima e verificação de escopo. Saúde não testa provedor/S3; esses caminhos têm smoke separado. Recursos staged são preparação, não produção ativa.
+O domínio deve apontar apenas para o serviço HTTP. Banco/S3 não têm páginas públicas. Memórias ativadas recebem embedding automaticamente. Falhas são declaradas sem perder a escrita. Backlog anterior exige `npm run index`; rerank de busca/contexto é padrão e aceita `rerank=false`. Um fluxo pode combinar chamadas de até 30 segundos por tentativa; configure o timeout de execução do cliente MCP em 240 segundos para permitir os fallbacks.
+
+Um deploy só é operacional depois de migrations, healthcheck, `tools/list`, chamada MCP autenticada, recusa de chamada anônima e verificação de escopo. Saúde não testa provedor/S3; esses caminhos têm smoke separado. Recursos staged são preparação, não produção ativa.
 
 Fontes: [Railway Infrastructure as Code](https://docs.railway.com/infrastructure-as-code), [pgvector](https://docs.railway.com/guides/rag-pipeline-pgvector), [Bucket e referências](https://docs.railway.com/storage-buckets), [isolamento por ambiente](https://docs.railway.com/guides/isolate-staging-production).
 

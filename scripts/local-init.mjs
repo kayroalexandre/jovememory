@@ -1,3 +1,4 @@
+import { homedir } from 'node:os';
 import { mkdir, writeFile, chmod, access } from 'node:fs/promises';
 import { randomBytes } from 'node:crypto';
 import { hash } from '../src/config.mjs';
@@ -18,7 +19,7 @@ const values={NODE_ENV:'development',HOST:'127.0.0.1',PORT:3000,PUBLIC_URL:'http
   DATABASE_URL:databaseUrl('jovememory_app',appPassword),
   AUTH_PROFILES:JSON.stringify(profiles),STDIO_PROFILE:'local-writer',ENABLE_PROVIDER:'false',MEMORY_REVIEW_MODE:'automatic',
   OPENROUTER_BASE_URL:'https://openrouter.ai/api/v1',OPENROUTER_DECISIONS_URL:'https://openrouter.ai/api/alpha/decisions',
-  PROVIDER_API_KEY_FILE:'private/openrouter.key',EMBEDDING_MODEL:'google/gemini-embedding-2',EMBEDDING_DIMENSIONS:1536,
+  PROVIDER_API_KEY_FILE:homedir()+'/.config/jovememory/secrets/openrouter.key',EMBEDDING_MODEL:'google/gemini-embedding-2',EMBEDDING_DIMENSIONS:1536,
   DECISION_MODEL:'upstage/solar-decide',RERANK_MODEL:'qwen/qwen3.8-flash',KNOWLEDGE_MODEL:'deepseek/deepseek-v4-flash',
   SYNTHESIS_MODEL:'stealth/space-bunny-alpha',
   S3_ENDPOINT:'http://127.0.0.1:59071',S3_REGION:'us-east-1',S3_BUCKET:'jovememory-dev',

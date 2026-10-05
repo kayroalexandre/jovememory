@@ -6,15 +6,19 @@
 
 ## Verificado localmente
 
-Versão 0.2.0: syntax/version, scanner público, 14 testes unitários e 17 cenários de integração (18 resultados TAP incluindo o teste principal), com todos os 32 nomes exercitados. Clientes MCP reais por HTTP/stdio, role runtime sem superuser/BYPASSRLS, autenticação/permissões/origin, concorrência de revisão e integridade/restauração de snapshot com mídia. Cobertura nova: ativação automática em todos os caminhos de escrita, recuperação imediata, checkpoint/registro, substituição concorrente, consolidação, validade temporal, gate opcional e rollback completo de conteúdo/auditoria. O modo manual foi testado separadamente. Dependências: auditoria npm sem vulnerabilidade conhecida na consulta desta entrega.
+Versão 0.2.0: syntax/version, scanner público, 16 testes unitários e 18 cenários de integração (19 resultados TAP incluindo o teste principal), com todos os 32 nomes exercitados. Clientes MCP reais por HTTP/stdio, role runtime sem superuser/BYPASSRLS, autenticação/permissões/origin, concorrência de revisão e integridade/restauração de snapshot com mídia. Cobertura nova: ativação automática em todos os caminhos de escrita, recuperação imediata, checkpoint/registro, substituição concorrente, consolidação, validade temporal, gate opcional e rollback completo de conteúdo/auditoria. O modo manual foi testado separadamente. Dependências: auditoria npm sem vulnerabilidade conhecida na consulta desta entrega.
 
-Não houve leitura/importação de corpus pessoal, migração de dados antigos, alteração dos recursos antigos ou chamada paga de modelo. `.env` e `private/` contêm somente configuração nova da instalação local e são ignorados pelo Git.
+Nesta reconciliação não houve importação de corpus pessoal ou dados antigos. O primeiro smoke remoto recusou embedding por ausência de chave no processo. O operador cadastrou as chaves em armazenamento externo/variáveis privadas. A conexão local foi ativada e passou por chamadas reais de embeddings, decisão, análise e rerank. `.env` e `private/` contêm somente configuração nova da instalação local e são ignorados pelo Git.
 
-## Roteamento OpenRouter preparado
+## Roteamento OpenRouter e validação real
 
 A camada de provedor foi ampliada para a matriz especializada definida para o Jove Memory: `google/gemini-embedding-2` em embeddings, `upstage/solar-decide` em gates probabilísticos pela Decisions API, `qwen/qwen3.8-flash` em rerank, `deepseek/deepseek-v4-flash` em extração/consolidação auxiliar e `stealth/space-bunny-alpha` em síntese de contexto. Os modelos generativos têm fallback entre si; decisões probabilísticas não recebem fallback de chat. Saídas gerativas permanecem auxiliares e não substituem conteúdo lossless ou evidências persistidas.
 
-A produção só é considerada conectada ao OpenRouter quando `OPENROUTER_API_KEY` estiver cadastrada como segredo de produção e `ENABLE_PROVIDER=true` tiver sido aplicado com deploy saudável. O desenvolvimento local usa `private/openrouter.key` e `npm run provider:enable`; a chave não é copiada para o `.env`.
+Indexação automática após ativação, rerank padrão, fallback em respostas fora do contrato e verificação das citações após orçamento passaram em testes locais com provedor simulado. Separadamente, chamadas reais no desenvolvimento confirmaram Gemini Embedding 2 (1536 dimensões), Solar Decide, DeepSeek V4 Flash e Qwen3.8 Flash. O Qwen usa saída JSON Schema e reasoning desativado para a tarefa de rerank. O modelo `stealth/space-bunny-alpha` retornou HTTP 404 no OpenRouter e não apareceu no catálogo consultado; síntese usa fallback, declarado por modelo efetivo e `synthesis_fallback`. Não há alegação de disponibilidade desse quinto modelo.
+
+Na reconciliação, GitHub e Railway já executavam o mesmo commit de roteamento. A variável de chave existia no Railway, mas o runtime retornou `PROVIDER_DISABLED` ao indexar com `provider_enabled=true`. Após o diagnóstico, as chaves foram cadastradas pelo operador e a ativação foi retomada com rebuild da fonte; saúde de banco/MCP não comprova saúde de modelos.
+
+A produção só é considerada conectada ao OpenRouter quando `OPENROUTER_API_KEY` estiver cadastrada como segredo de produção e `ENABLE_PROVIDER=true` tiver sido aplicado com deploy saudável. O desenvolvimento local usa `~/.config/jovememory/secrets/openrouter.key` e `npm run provider:enable`; a chave não é copiada para o `.env`.
 
 ## Limites e próximos gates
 
@@ -24,7 +28,7 @@ Smoke remoto inicial da versão 0.1.0 observado com clientes MCP oficiais e cont
 
 Serviços novos do Railway não aplicam railway.json. A inicialização sem migration falhou no primeiro deploy; comandos e healthcheck foram corrigidos pela configuração nativa e um deploy novo pela fonte GitHub concluiu migration/provisionamento/start. A configuração pública passou para Infrastructure as Code; o SDK foi avaliado localmente. IaC não foi aplicado via CLI, e ausência de drift remoto não foi medida por plan. O serviço ativo foi configurado pelas ferramentas nativas.
 
-Qualidade de corpus real, capacidade multimodal de um modelo específico, custo/latência e calibração dos limiares não foram medidos. Provedor pago permanece desabilitado; testes semânticos usam provedor simulado. Restore verificou banco e arquivos locais; não repopulou Bucket nem restaurou volume de produção. Política automática de backups nativos não foi configurada/verificada nesta entrega e deve ser definida conforme retenção exigida.
+Qualidade de corpus real, capacidade multimodal de um modelo específico, custo/latência e calibração dos limiares não foram medidos. Provedor local ativado com chave fora do checkout; integração automatizada usa exclusivamente provedor simulado e Compose isolado. Inferência real de produção requer smoke após o rebuild; o healthcheck não testa modelos. Restore verificou banco e arquivos locais; não repopulou Bucket nem restaurou volume de produção. Política automática de backups nativos não foi configurada/verificada nesta entrega e deve ser definida conforme retenção exigida.
 
 A instalação anterior foi retirada por solicitação explícita do operador, sem importar seu corpus. Checkout/histórico Git local, dados, backups, credenciais locais, contêineres, volumes e caches identificados foram removidos. Registros locais dos clientes apontam para esta instalação nova. O repositório remoto anterior não está mais disponível; esta entrega continua sem corpus antigo.
 

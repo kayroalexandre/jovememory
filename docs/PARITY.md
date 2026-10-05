@@ -4,10 +4,10 @@ Esta é uma reconstrução, com schema e transporte novos. O catálogo anterior 
 
 | Objetivo | Ferramentas reconstruídas | Contrato novo |
 | --- | --- | --- |
-| Recuperação híbrida | `memory_search`, `memory_read`, `memory_tree` | FTS português, pgvector exato, grafo e recência de candidatos; proveniência e degradação |
+| Recuperação híbrida | `memory_search`, `memory_read`, `memory_tree` | FTS português, pgvector exato, grafo e recência de candidatos; rerank padrão com provedor ativo, proveniência e degradação |
 | Política/diagnóstico | `memory_version`, `memory_capabilities`, `memory_doctor`, `memory_stats` | Catálogo por perfil; apenas workspaces autorizados; sem dados de configuração privada |
 | Conteúdo paginado | `memory_list`, `memory_list_proposed` | Cursor vinculado a workspace/filtros/data; retome com o `as_of` retornado |
-| Escrita/revisão | `memory_write`, `memory_propose_write`, `memory_review` | Ativação automática padrão; modo manual opcional exige outro perfil |
+| Escrita/revisão | `memory_write`, `memory_propose_write`, `memory_review` | Ativação automática padrão com indexação após commit quando o provedor está ativo; modo manual opcional exige outro perfil |
 | História/retenção | `memory_update_item`, `memory_delete`, `memory_move_item` | Substituição automática atômica, soft delete e movimento auditado dentro do workspace |
 | Ingestão | `memory_ingest_markdown`, `memory_ingest_project` | Cliente envia conteúdo; preview/hash obrigatório; aplicação transacional do manifesto; tombstones/idempotência |
 | Mídia | `memory_attach_media`, `memory_search_media` | Bytes S3 privados, SHA-256, extração PDF/texto, texto fornecido pelo cliente, vetor textual ou multimodal de imagem quando configurado |

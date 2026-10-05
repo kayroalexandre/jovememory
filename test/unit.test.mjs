@@ -32,6 +32,7 @@ test('Write policy defaults to automatic, accepts manual opt-in and rejects an u
 });
 test('OpenRouter model roles default to the planned specialized matrix',()=>{
   const env={DATABASE_URL:'unused',AUTH_PROFILES:JSON.stringify([{id:'synthetic-writer',role:'writer',workspaces:['synthetic-a'],sha256:hash('synthetic-token')}])};
+  assert.throws(()=>config({...env,ENABLE_PROVIDER:'true'}),{code:'CONFIG'});
   const models=config(env).provider;
   assert.equal(models.embeddingModel,'google/gemini-embedding-2');
   assert.equal(models.decisionModel,'upstage/solar-decide');
@@ -53,7 +54,10 @@ test('Ingestion hash commits to workspace, source and bytes; safe paths and fenc
   for(const source of ['../secret.md','/etc/password.md','.env.md','docs/../x.md','docs\\x.md']) assert.throws(()=>planIngestion('synthetic-a',[{source,content:'text'}]));
 });
 test('Context budget counts complete UTF-8 JSON and reports whole omitted items',()=>{
-  const result=bounded({results:[{id:'1',content:'ação'.repeat(1000)},{id:'2',content:'large'.repeat(1000)}]},1024);
+  const input={results:[{id:'1',content:'ação'.repeat(1000)},{id:'2',content:'large'.repeat(1000)}]};
+  const result=bounded(input,1024);
+  assert.equal(input.results.length,2);
+  assert.deepEqual(bounded(result,1024).omitted_ids,result.omitted_ids);
   assert.ok(Buffer.byteLength(JSON.stringify(result))<=1024);
   assert.deepEqual(result.omitted_ids,['1','2']);assert.equal(result.results.length,0);
 });
@@ -117,6 +121,8 @@ test('Provider wire contract routes embeddings, decisions, rerank, knowledge and
     const extracted=await p.extract('synthetic');assert.equal(extracted.model,'deepseek/deepseek-v4-flash');
     const synthesized=await p.synthesize('query',[{id:'a',content:'one'}]);assert.equal(synthesized.model,'stealth/space-bunny-alpha');
     assert.ok(requests.some(x=>x.path==='/decisions' && x.body.model==='upstage/solar-decide'));
+    const qwen=requests.find(x=>x.body.model==='qwen/qwen3.8-flash');
+    assert.equal(qwen.body.response_format.type,'json_schema');assert.equal(qwen.body.response_format.json_schema.strict,true);assert.equal(qwen.body.reasoning.enabled,false);
     await assert.rejects(p.embed('fail'),error=>error.code==='PROVIDER' && !error.message.includes(key));
   } finally {server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
 });
@@ -127,4 +133,15 @@ test('Runtime bootstrap derives a role-specific credential without reusing or di
   const runtime=runtimeDatabaseUrl(admin.href);assert.equal(runtime.username,'jovememory_app');assert.notEqual(runtime.password,admin.password);
   assert.equal(runtime.password.length,64);assert.equal(runtime.href,runtimeDatabaseUrl(admin.href).href);
   admin.pathname='/another';assert.notEqual(runtime.password,runtimeDatabaseUrl(admin.href).password);
+});
+
+
+test('Malformed model contracts trigger fallback and cannot introduce unknown citations',async()=>{
+  const p=new Provider({enabled:true,key:'synthetic',synthesisModel:'synthetic-primary',knowledgeModel:'synthetic-fallback'});
+  const models=[];
+  p.request=async(path,input)=>{models.push(input.model);return {choices:[{message:{content:JSON.stringify({summary:'Synthetic answer',cited_ids:[input.model==='synthetic-primary'?'unknown':'source']})}}]};};
+  const result=await p.synthesize('query',[{id:'source',content:'Synthetic source'}]);
+  assert.deepEqual(models,['synthetic-primary','synthetic-fallback']);assert.equal(result.model,'synthetic-fallback');
+  p.request=async()=>({choices:[{message:{content:JSON.stringify({summary:'Synthetic answer',cited_ids:['unknown']})}}]});
+  await assert.rejects(p.synthesize('query',[{id:'source',content:'Synthetic source'}]),{code:'PROVIDER'});
 });
