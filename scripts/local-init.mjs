@@ -21,7 +21,7 @@ const values={NODE_ENV:'development',HOST:'127.0.0.1',PORT:3007,PUBLIC_URL:'http
   OPENROUTER_BASE_URL:'https://openrouter.ai/api/v1',OPENROUTER_DECISIONS_URL:'https://openrouter.ai/api/alpha/decisions',
   PROVIDER_API_KEY_FILE:homedir()+'/.config/jovememory/secrets/openrouter.key',EMBEDDING_MODEL:'google/gemini-embedding-2',EMBEDDING_DIMENSIONS:1536,
   DECISION_MODEL:'upstage/solar-decide',RERANK_MODEL:'qwen/qwen3.8-flash',KNOWLEDGE_MODEL:'deepseek/deepseek-v4-flash',
-  SYNTHESIS_MODEL:'stealth/space-bunny-alpha',
+  SYNTHESIS_MODEL:'openrouter/free',
   S3_ENDPOINT:'http://127.0.0.1:59071',S3_REGION:'us-east-1',S3_BUCKET:'jovememory-dev',
   S3_ACCESS_KEY_ID:'local-'+randomBytes(12).toString('hex'),S3_SECRET_ACCESS_KEY:randomBytes(32).toString('hex')};
 await writeFile('.env',Object.entries(values).map(([key,value])=>`${key}=${value}`).join('\n')+'\n',{mode:0o600,flag:'wx'});

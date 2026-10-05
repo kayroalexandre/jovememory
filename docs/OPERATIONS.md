@@ -56,7 +56,10 @@ Configure pelo Railway:
 | `DECISION_MODEL` | `upstage/solar-decide` |
 | `RERANK_MODEL` | `qwen/qwen3.8-flash` |
 | `KNOWLEDGE_MODEL` | `deepseek/deepseek-v4-flash` |
-| `SYNTHESIS_MODEL` | `stealth/space-bunny-alpha` |
+| `SYNTHESIS_MODEL` | `openrouter/free`; inferência de contexto seletiva |
+| `FREE_INFERENCE_PREFERENCES` | IDs gratuitos preferidos, separados por vírgula; filtrados pelo catálogo atual |
+| `INFERENCE_FALLBACK_MODELS` | `deepseek/deepseek-v4-pro,deepseek/deepseek-v4-flash,xiaomi/mimo-v2.5` |
+| `INFERENCE_MAX_INPUT_PRICE` / `INFERENCE_MAX_OUTPUT_PRICE` | `0.25` / `1.50`, em USD por milhão de tokens de entrada/saída |
 | `S3_ENDPOINT` | `${{Media.ENDPOINT}}` |
 | `S3_BUCKET` | `${{Media.BUCKET}}` — o nome técnico do S3, não o rótulo exibido no Railway |
 | `S3_ACCESS_KEY_ID` | `${{Media.ACCESS_KEY_ID}}` |
@@ -112,3 +115,9 @@ O cliente deve associar cada projeto ao workspace correspondente e usar uma cred
 Na configuração local padrão, a API usa porta 3007 para reduzir conflito com servidores de aplicações na porta 3000. Instalações existentes precisam ajustar `PORT` e `PUBLIC_URL` privados juntos; produção conserva a porta nativa configurada pelo Railway.
 
 `memory_capabilities.inference` informa a política: inferência auxiliar somente mediante pedido do agente. Escritas com `enrich:true`, contexto com `synthesize:true` e consolidação com `summarize:true` podem chamar modelos adicionais; as escolhas não exigem revisor humano. Embeddings e rerank continuam padrão, e decisão permanece indicativa. Execute smoke pago separado do healthcheck para validar o provedor e seus fallbacks.
+
+## Validar a rota gratuita — 0.4.0
+
+Depois de alterar variáveis, faça build novo da fonte e confirme `memory_capabilities.models.synthesis`, preferências e tetos de preço. Use conteúdo sintético para `memory_context(synthesize:true)`; confira `synthesis.model` efetivo, `synthesis.routing.tier`, citações e degradação. `free` significa tentativa sob teto zero; `paid_fallback` declara uso do fallback pago. O roteador gratuito geral não é um ranking de inteligência. O catálogo atual e os preços devem ser revistos ao trocar preferências, e limites de preço continuam aplicados a cada chamada.
+
+Associe cada cliente ao workspace do próprio projeto e confirme o perfil antes de gravar. O workspace da aplicação de memória guarda somente contexto da própria aplicação; implementação e backlog de clientes pertencem aos workspaces correspondentes. Auditoria e versões históricas são preservadas quando uma nota é realocada; busca normal exclui a origem apagada. Não trate a memória da aplicação como workspace global para projetos sem configuração.

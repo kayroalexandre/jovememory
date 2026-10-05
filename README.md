@@ -52,9 +52,9 @@ Quando `ENABLE_PROVIDER=true`, o Jove Memory usa uma matriz explícita de modelo
 | Decisions | `upstage/solar-decide` | Gate de escrita e travessia entre workspaces pela Decisions API |
 | Rerank | `qwen/qwen3.8-flash` | Reordenação automática dos candidatos recuperados; `rerank=false` desativa |
 | Knowledge | `deepseek/deepseek-v4-flash` | Extração de metadata e resumo auxiliar de consolidação |
-| Synthesis | `stealth/space-bunny-alpha` | Síntese do pacote de contexto mantendo IDs de evidência |
+| Synthesis | `openrouter/free` com preferência por modelos gratuitos maiores | Compactação seletiva de evidências; fallback DeepSeek V4 Pro, V4 Flash e MiMo-V2.5 com teto de preço |
 
-Os três modelos generativos podem assumir fallback entre si dentro de suas tarefas. O modelo de decisão não recebe fallback generativo, porque o fluxo depende da probabilidade estruturada da Decisions API. Embeddings, fontes originais e conteúdo lossless continuam sendo a base persistida; resumos de modelo são metadata auxiliar e nunca substituem a evidência original.
+A síntese tenta modelos gratuitos preferidos, depois o roteador gratuito geral e, em caso de falha ou resposta inválida, DeepSeek V4 Pro, V4 Flash e MiMo-V2.5. Rerank e enriquecimento conservam seus modelos especializados e fallbacks próprios. O modelo de decisão não recebe fallback generativo, porque o fluxo depende da probabilidade estruturada da Decisions API. Embeddings, fontes originais e conteúdo lossless continuam sendo a base persistida; resumos de modelo são metadata auxiliar e nunca substituem a evidência original.
 
 Produção usa `OPENROUTER_API_KEY` como variável privada do Railway. Desenvolvimento local pode usar a mesma variável no processo ou `PROVIDER_API_KEY_FILE=<caminho-absoluto-externo>`, mantendo o segredo fora de `.env` e do Git. O código continua aceitando `PROVIDER_API_KEY` como alias legado.
 
@@ -93,3 +93,11 @@ Licença Apache-2.0. O repositório distribui software e exemplos sintéticos; n
 O agente conectado interpreta a tarefa, escolhe ferramentas e responde ao usuário. O jovememory organiza e recupera evidências do workspace: embeddings são criados/atualizados automaticamente após ativação, decisões avaliam escritas sem bloquear a política automática e rerank ordena candidatos por padrão. Inferência auxiliar exige pedido técnico do agente: `memory_context(synthesize:true)` compacta evidências citadas, `memory_write(enrich:true)` e `memory_update_item(enrich:true)` enriquecem conteúdo bruto, e `memory_consolidate(summarize:true)` produz resumo adicional. Os defaults não repetem a análise já feita pelo agente e não exigem aprovação humana. Consulte [AGENTS-INTEGRATION.md](docs/AGENTS-INTEGRATION.md).
 
 Cada projeto usa um workspace explícito e credencial limitada a ele. O banco físico é compartilhado nesta instalação; registros, vetores, mídia e auditoria têm isolamento lógico por workspace com RLS. `memory_create_workspace` é uma operação administrativa idempotente, sem importar conteúdo ou conceder permissões ao cliente automaticamente.
+
+## Inferência gratuita com preferência por capacidade
+
+`SYNTHESIS_MODEL=openrouter/free` substitui o modelo primário anterior. O [roteador gratuito nativo](https://openrouter.ai/docs/guides/routing/routers/free-router) escolhe aleatoriamente entre modelos compatíveis; ele não promete selecionar o maior ou melhor modelo. Por isso, o jovememory consulta o catálogo atual, filtra modelos textuais com custo zero e contexto suficiente e envia primeiro uma lista ordenada pelo [fallback nativo](https://openrouter.ai/docs/guides/routing/model-fallbacks). A preferência inicial é Nemotron 3 Ultra 550B, Nemotron 3 Super 120B e Gemma 4 31B. Candidatos adicionais usam tamanho divulgado e contexto como critérios secundários; isso não é medição de inteligência. O catálogo é renovado a cada dez minutos e não contém dados do workspace.
+
+Tentativas gratuitas usam `provider.max_price` zero. Fallbacks pagos são DeepSeek V4 Pro, V4 Flash e MiMo-V2.5, com teto de US$ 0,25 de entrada e US$ 1,50 de saída por milhão de tokens, imposto ao roteamento de provedor. `FREE_INFERENCE_PREFERENCES`, `INFERENCE_FALLBACK_MODELS`, `INFERENCE_MAX_INPUT_PRICE` e `INFERENCE_MAX_OUTPUT_PRICE` permitem ajustar a política. O resultado informa modelo efetivo e `routing.tier` (`free`, `paid_fallback` ou `direct`); selecionar um modelo gratuito pela rota não é tratado como fallback pago.
+
+Disponibilidade, limites gratuitos e qualidade variam. JSON e citações continuam validados localmente, e inferência permanece opcional por pedido técnico do agente. Embeddings, decisão e rerank não mudam de função.

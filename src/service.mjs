@@ -145,7 +145,7 @@ export class Service {
         if(a.synthesize && results.length && this.config.provider.enabled) {
           try {
             synthesis=await this.provider.synthesize(a.query,results);
-            if(synthesis.model!==this.config.provider.synthesisModel) search.degraded.push('synthesis_fallback');
+            if(synthesis.routing?.paid_fallback ?? synthesis.model!==this.config.provider.synthesisModel) search.degraded.push('synthesis_fallback');
             const maxSummaryChars=Math.max(256,Math.min(1600,Math.floor(a.max_bytes/4)));
             if(synthesis.summary.length>maxSummaryChars) synthesis={...synthesis,summary:synthesis.summary.slice(0,maxSummaryChars)+'...',truncated:true};
           } catch {search.degraded.push('synthesis_unavailable');}

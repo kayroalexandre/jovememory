@@ -6,11 +6,11 @@
 
 ## Verificado localmente
 
-Versão 0.3.0: syntax/version, scanner público, 17 testes unitários e 19 cenários de integração (20 resultados TAP incluindo o teste principal), com todos os 33 nomes exercitados. Clientes MCP reais por HTTP/stdio, role runtime sem superuser/BYPASSRLS, autenticação/permissões/origin, concorrência de revisão e integridade/restauração de snapshot com mídia. Cobertura nova: ativação automática em todos os caminhos de escrita, recuperação imediata, checkpoint/registro, substituição concorrente, consolidação, validade temporal, gate opcional e rollback completo de conteúdo/auditoria. O modo manual foi testado separadamente. Dependências: auditoria npm sem vulnerabilidade conhecida na consulta desta entrega.
+Versão 0.4.0: syntax/version, scanner público, 20 testes unitários e 19 cenários de integração (20 resultados TAP incluindo o teste principal), com todos os 33 nomes exercitados. Clientes MCP reais por HTTP/stdio, role runtime sem superuser/BYPASSRLS, autenticação/permissões/origin, concorrência de revisão e integridade/restauração de snapshot com mídia. Cobertura nova: ativação automática em todos os caminhos de escrita, recuperação imediata, checkpoint/registro, substituição concorrente, consolidação, validade temporal, gate opcional e rollback completo de conteúdo/auditoria. O modo manual foi testado separadamente. Dependências: auditoria npm sem vulnerabilidade conhecida na consulta desta entrega.
 
 Nesta reconciliação não houve importação de corpus pessoal ou dados antigos. O primeiro smoke remoto recusou embedding por ausência de chave no processo. O operador cadastrou as chaves em armazenamento externo/variáveis privadas. A conexão local foi ativada e passou por chamadas reais de embeddings, decisão, análise e rerank. `.env` e `private/` contêm somente configuração nova da instalação local e são ignorados pelo Git.
 
-## Roteamento OpenRouter e validação real
+## Roteamento anterior e validação real — histórico 0.2/0.3
 
 A camada de provedor foi ampliada para a matriz especializada definida para o Jove Memory: `google/gemini-embedding-2` em embeddings, `upstage/solar-decide` em gates probabilísticos pela Decisions API, `qwen/qwen3.8-flash` em rerank, `deepseek/deepseek-v4-flash` em extração/consolidação auxiliar e `stealth/space-bunny-alpha` em síntese de contexto. Os modelos generativos têm fallback entre si; decisões probabilísticas não recebem fallback de chat. Saídas gerativas permanecem auxiliares e não substituem conteúdo lossless ou evidências persistidas.
 
@@ -39,3 +39,9 @@ O gate inicial no GitHub identificou uma imagem MinIO indisponível em runner se
 Inferência generativa é seletiva: contexto sem síntese, notas sem enriquecimento e consolidação sem resumo auxiliar por padrão. O agente pode solicitar essas funções quando úteis, sem aprovação humana. Embeddings automáticos, decisão indicativa e rerank padrão permanecem ativos. Testes verificam ausência das chamadas generativas redundantes, solicitação explícita, invalidação de análise da versão anterior, referências/orçamento e persistência integral.
 
 Provisionamento administrativo de workspace via MCP é idempotente, auditado e restrito por perfil/nome. Novos perfis podem ser acrescentados em `EXTRA_AUTH_PROFILES` sem substituir a base. Migration 002 aplicada no ambiente local; autorização e RLS entre workspaces foram verificadas em Compose isolado. Banco físico separado por projeto não é parte desta topologia. Associação privada de cliente e histórico de sessões reais não são garantidos pela existência destas funções.
+
+## Inferência gratuita — versão 0.4.0
+
+O modelo primário anterior foi retirado da configuração vigente. Síntese usa rota gratuita com catálogo dinâmico e preferência por modelos maiores: Nemotron Ultra, Super e Gemma 31B. Fallbacks pagos explícitos: DeepSeek V4 Pro, V4 Flash e MiMo-V2.5, sujeitos aos tetos de US$ 0,25 de entrada e US$ 1,50 de saída por milhão de tokens. Modelos efetivos e classe da rota são declarados, sem confundir seleção gratuita com fallback pago. Embeddings, decisão, rerank e inferência seletiva preservam seus papéis.
+
+Testes cobrem seleção de candidatos gratuitos, rejeição de modalidades/preços incompatíveis, preferências, identidade efetiva, JSON/citações, fallback pago com teto e comportamento do contexto para rota gratuita/paga. Chamadas reais são validação operacional separada; não medem superioridade, calibração ou disponibilidade futura. O histórico acima conserva o diagnóstico do modelo anterior e não representa a configuração atual.
