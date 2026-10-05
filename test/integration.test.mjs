@@ -261,6 +261,50 @@ test('Isolated database, object storage, MCP and backup lifecycle',async t=>{
       try {await client.connect(transport);const result=await client.callTool({name:'memory_version',arguments:{}});assert.equal(result.structuredContent.name,'jovememory');}
       finally {await client.close();}
     });
+    await t.test('Specialized model flows index active writes, preserve history and degrade safely',async()=>{
+      const calls=[],w='synthetic-b',profile={id:'model-writer',role:'writer',workspaces:[w]};
+      const provider={
+        embed:async text=>{calls.push(['embedding',text]);return [1,0,0];},
+        decision:async()=>{calls.push(['decision']);return 0.8;},
+        extract:async()=>{calls.push(['knowledge']);return {model:'synthetic-knowledge',summary:'Auxiliary analysis',keywords:[],entities:[]};},
+        rerank:async(query,items)=>{calls.push(['rerank']);return {model:'synthetic-rerank',scores:new Map(items.map(x=>[x.id,0.9]))};},
+        synthesize:async(query,items)=>{calls.push(['synthesis']);return {model:'synthetic-synthesis',summary:'Auxiliary context',cited_ids:items.map(x=>x.id)};},
+        consolidate:async sources=>({model:'synthetic-knowledge',summary:'Auxiliary consolidation',source_ids:sources.map(x=>x.id)})
+      };
+      const enabled={...c,reviewMode:'automatic',provider:{...c.provider,enabled:true,dimensions:3,embeddingModel:'synthetic-model'}};
+      const service=new Service(store,enabled,{provider});const auto=(name,args)=>service.call(name,{workspace:w,...args},profile);
+      const first=await auto('memory_write',{content:'Synthetic modelflow cobalt observatory.'});
+      assert.equal(first.indexing[0].status,'indexed');assert.equal(first.gate.probability_calibrated,false);
+      assert.equal(first.item.metadata.model_analysis.model,'synthetic-knowledge');
+      const search=await auto('memory_search',{query:'modelflow'});
+      assert.ok(search.results.some(x=>x.id===first.item.id&&x.provenance.includes('semantic')));
+      assert.ok(search.results.every(x=>x.rerank_model==='synthetic-rerank'));
+      const before=calls.length;await auto('memory_search',{query:'modelflow',rerank:false});assert.ok(!calls.slice(before).some(x=>x[0]==='rerank'));
+      const context=await auto('memory_context',{query:'modelflow',max_bytes:262144});assert.equal(context.synthesis.model,'synthetic-synthesis');
+      provider.synthesize=async(query,items)=>({model:'synthetic-synthesis',summary:'Synthetic context '.repeat(200),cited_ids:items.map(x=>x.id)});
+      const small=await auto('memory_context',{query:'modelflow',max_bytes:1024});assert.ok(Buffer.byteLength(JSON.stringify(small))<=1024);
+      assert.ok(!small.synthesis || small.synthesis.cited_ids.every(id=>small.results.some(x=>x.id===id)));
+      const replacement=await auto('memory_update_item',{id:first.item.id,content:'Updated synthetic modelflow observatory.',reason:'Synthetic revision'});
+      assert.equal(replacement.indexing[0].status,'indexed');assert.equal((await store.read(w,first.item.id)).status,'invalidated');
+      const checkpoint=await auto('memory_checkpoint',{session:'model-test',title:'Synthetic',summary:'Synthetic checkpoint modelflow.'});assert.equal(checkpoint.indexing[0].status,'indexed');
+      const record=await auto('memory_record',{kind:'decision',key:'model-test',title:'Synthetic',statement:'Synthetic record modelflow.',basis:'asserted'});assert.equal(record.indexing[0].status,'indexed');
+      const input={source:'docs/models.md',content:'# Models\nSynthetic ingestion modelflow.'};const plan=await auto('memory_ingest_markdown',input);
+      const ingest=await auto('memory_ingest_markdown',{...input,dry_run:false,plan_hash:plan.plan_hash});assert.equal(ingest.indexing[0].status,'indexed');
+      const n=calls.length;await auto('memory_ingest_markdown',{...input,dry_run:false,plan_hash:plan.plan_hash});assert.equal(calls.length,n);
+      const proposal=await auto('memory_propose_write',{content:'Synthetic second source modelflow.'});assert.equal(proposal.indexing[0].status,'indexed');
+      const mergePlan=await auto('memory_consolidate',{ids:[replacement.item.id,proposal.item.id]});
+      const merge=await auto('memory_consolidate',{ids:[replacement.item.id,proposal.item.id],dry_run:false,plan_hash:mergePlan.plan_hash});
+      assert.equal(merge.indexing[0].status,'indexed');assert.equal(merge.model_summary.model,'synthetic-knowledge');assert.ok(merge.item.content.includes(proposal.item.content));
+      const manual=new Service(store,{...enabled,reviewMode:'manual'},{provider});const oldCalls=calls.length;
+      const pending=await manual.call('memory_propose_write',{workspace:w,content:'Synthetic pending modelflow.'},profile);assert.equal(calls.length,oldCalls);
+      const accepted=await manual.call('memory_review',{workspace:w,id:pending.item.id,action:'accept',reason:'Synthetic independent review'},{id:'model-reviewer',role:'reviewer',workspaces:[w]});assert.equal(accepted.indexing[0].status,'indexed');
+      const unavailable=new Service(store,enabled,{provider:{...provider,embed:async()=>{throw new Error('synthetic');}}});
+      const saved=await unavailable.call('memory_write',{workspace:w,content:'Synthetic outage modelflow.'},profile);
+      assert.equal(saved.item.status,'active');assert.deepEqual(saved.degraded,['semantic_index_unavailable']);assert.equal(saved.indexing[0].status,'unavailable');
+      const expired=await auto('memory_propose_write',{content:'Synthetic expired modelflow.',valid_until:'2000-01-01T00:00:00Z'});assert.equal(expired.indexing[0].status,'ineligible');
+      const audit=await store.mutations(w,{id:replacement.item.id,limit:20});assert.ok(audit.some(x=>x.operation==='embed'&&x.actor===profile.id));
+      assert.ok(['embedding','decision','knowledge','rerank','synthesis'].every(role=>calls.some(x=>x[0]===role)));
+    });
     await t.test('Full snapshot backup includes media; scratch restore compares exact table fingerprints',async()=>{
       backupDir=await mkdtemp(tmpdir()+'/jovememory-backup-');
       await assert.rejects(externalDirectory(process.cwd()),{code:'BACKUP'});

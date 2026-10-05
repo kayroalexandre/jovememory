@@ -29,6 +29,25 @@ export class Service {
     const a=parsed.data;authorize(profile,tool.permission,a.workspace);
     ensure(!(a.valid_from && a.valid_until) || new Date(a.valid_from)<new Date(a.valid_until),'DATE','Validity end must follow start.');
     const result=await this.dispatch(name,a,profile);
+    if(this.config.provider.enabled && ['write','review'].includes(tool.permission)) {
+      const items=result.item ? [result.item] : name==='memory_review' && result.status==='active' ? [await this.store.read(a.workspace,result.id)] :
+        ['memory_ingest_markdown','memory_ingest_project'].includes(name) && !a.dry_run ? result.results.filter(item=>!item.skipped) : [];
+      if(items.length) {
+        result.indexing=[];
+        for(const item of items) {
+          if(!isEligible(item)) {result.indexing.push({id:item.id,status:'ineligible'});continue;}
+          try {
+            const vector=await this.provider.embed(item.content);
+            await this.store.embed(a.workspace,item.id,vector,this.config.provider.embeddingModel,item.content_hash,profile.id);
+            result.indexing.push({id:item.id,status:'indexed',model:this.config.provider.embeddingModel});
+            item.embedding_model=this.config.provider.embeddingModel;
+          } catch {
+            result.indexing.push({id:item.id,status:'unavailable'});
+            result.degraded=[...new Set([...(result.degraded || []),'semantic_index_unavailable'])];
+          }
+        }
+      }
+    }
     ensure(Buffer.byteLength(JSON.stringify(result))<=8388608,'LIMIT','Tool result exceeds 8 MiB; reduce page or content size.');return result;
   }
   async references(workspace,ids,strict=true) {
@@ -63,9 +82,10 @@ export class Service {
     arms.temporal=(await this.store.eligible(a.workspace,[...new Set([...seeds,...arms.graph.map(r=>r.id)])],asOf))
       .sort((x,y)=>new Date(y.created_at)-new Date(x.created_at));
     let results=fuse(arms,a.limit);
-    if(a.rerank && results.length) {
+    if(a.rerank!==false && this.config.provider.enabled && results.length) {
       try {
         const ranked=await this.provider.rerank(a.query,results);
+        if(ranked.model!==this.config.provider.rerankModel) degraded.push('rerank_fallback');
         results=results.map(item=>({...item,rerank_score:ranked.scores.get(item.id) ?? 0,rerank_model:ranked.model}))
           .sort((x,y)=>y.rerank_score-x.rerank_score);
       } catch {degraded.push('rerank_unavailable');}
@@ -84,11 +104,11 @@ export class Service {
       case 'memory_list': {const page=await s.page(w,a);return {workspace:w,...page,items:page.items.map(({content,metadata,...item})=>item)};}
       case 'memory_propose_write': return this.writeResult(w,await s.propose(w,a,actor,automatic));
       case 'memory_write': {
-        let gate={status:'skipped',threshold:this.config.thresholds.write,calibrated:false,probability_calibrated:true,model:this.config.provider.decisionModel};
+        let gate={status:'skipped',threshold:this.config.thresholds.write,calibrated:false,probability_calibrated:false,probability_source:'model',model:this.config.provider.decisionModel};
         let enrichment={status:'skipped',model:this.config.provider.knowledgeModel};
         try {const score=await this.provider.decision({workspace:w,content:a.content},'Is this durable knowledge worth retaining, such as an explicit fact, decision, preference, constraint or procedure?');gate={...gate,status:score>=gate.threshold?'recommended':'below_threshold',score};}
         catch {gate.status='unavailable';}
-        try {enrichment={status:'available',...await this.provider.extract(a.content)};} catch {enrichment.status='unavailable';}
+        try {enrichment={status:'available',...await this.provider.extract(a.content)};enrichment.fallback=enrichment.model!==this.config.provider.knowledgeModel;} catch {enrichment.status='unavailable';}
         const metadata=enrichment.status==='available' ? {model_analysis:{summary:enrichment.summary,keywords:enrichment.keywords,entities:enrichment.entities,model:enrichment.model}} : undefined;
         return this.writeResult(w,await s.propose(w,{...a,gate,metadata},actor,automatic),{gate,enrichment});
       }
@@ -117,11 +137,25 @@ export class Service {
         if(results.length && this.config.provider.enabled) {
           try {
             synthesis=await this.provider.synthesize(a.query,results);
+            if(synthesis.model!==this.config.provider.synthesisModel) search.degraded.push('synthesis_fallback');
             const maxSummaryChars=Math.max(256,Math.min(1600,Math.floor(a.max_bytes/4)));
             if(synthesis.summary.length>maxSummaryChars) synthesis={...synthesis,summary:synthesis.summary.slice(0,maxSummaryChars)+'...',truncated:true};
           } catch {search.degraded.push('synthesis_unavailable');}
         }
-        return bounded({workspace:w,results,gaps,as_of:search.as_of,evidence:search.evidence,degraded:search.degraded,thresholds:search.thresholds,synthesis},a.max_bytes);
+        const base={workspace:w,results,gaps,as_of:search.as_of,evidence:{...search.evidence,retrieval_incomplete:search.degraded.length>0},degraded:search.degraded,thresholds:search.thresholds};
+        let output;
+        try {output=bounded({...base,synthesis},a.max_bytes);}
+        catch(error) {
+          if(error.code!=='BUDGET' || !synthesis) throw error;
+          output=bounded({...base,synthesis:null,degraded:[...base.degraded,'synthesis_budget_omitted']},a.max_bytes);
+        }
+        if(output.synthesis && output.synthesis.cited_ids.some(id=>!output.results.some(item=>item.id===id))) {
+          output=bounded({...output,synthesis:null,degraded:[...output.degraded,'synthesis_budget_omitted']},a.max_bytes);
+        }
+        if(output.degraded.includes('synthesis_budget_omitted')) {
+          output=bounded({...output,evidence:{...output.evidence,retrieval_incomplete:true}},a.max_bytes);
+        }
+        return output;
       }
       case 'memory_checkpoint': {
         const metadata={contract:1,session:a.session,title:a.title,next_steps:a.next_steps,references:await this.references(w,a.references)};
@@ -160,7 +194,7 @@ export class Service {
         ensure(a.plan_hash===planHash,'PLAN','Consolidation requires its unchanged preview hash.');
         let modelSummary=null; const degraded=[];
         if(this.config.provider.enabled) {
-          try {modelSummary=await this.provider.consolidate(sources);}
+          try {modelSummary=await this.provider.consolidate(sources);if(modelSummary.model!==this.config.provider.knowledgeModel) degraded.push('consolidation_model_fallback');}
           catch {degraded.push('consolidation_model_unavailable');}
         } else degraded.push('consolidation_model_disabled');
         return this.writeResult(w,await s.consolidate(w,a.ids,planHash,actor,automatic,modelSummary),{model_summary:modelSummary,degraded});

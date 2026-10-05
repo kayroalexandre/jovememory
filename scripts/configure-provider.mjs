@@ -1,12 +1,19 @@
-import { access, chmod, readFile, stat, writeFile } from 'node:fs/promises';
+import { access, chmod, readFile, realpath, stat, writeFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { resolve } from 'node:path';
 import { ensure } from '../src/config.mjs';
 
-const envPath='.env', keyPath='private/openrouter.key';
+const envPath='.env', keyPath=resolve(process.env.PROVIDER_API_KEY_FILE || homedir()+'/.config/jovememory/secrets/openrouter.key');
+ensure(!keyPath.startsWith(resolve('.')+'/'),'CONFIG','The provider key must be stored outside the project directory.');
 await access(envPath).catch(()=>ensure(false,'CONFIG','Run npm run local:init before enabling the provider.'));
-await access(keyPath).catch(()=>ensure(false,'CONFIG','Create private/openrouter.key before enabling the provider.'));
+await access(keyPath).catch(()=>ensure(false,'CONFIG','Create the external private provider key file before enabling the provider.'));
+const canonical=await realpath(keyPath);
+ensure(!canonical.startsWith((await realpath('.'))+'/'),'CONFIG','The provider key must resolve outside the project directory.');
 const key=(await readFile(keyPath,'utf8')).trim();
 ensure(key.length>=20,'CONFIG','The OpenRouter key file is empty or invalid.');
-await chmod(keyPath,0o600).catch(()=>{});
+await chmod(keyPath,0o600);
+const mode=(await stat(keyPath)).mode & 0o777;
+ensure(process.platform==='win32' || (mode & 0o077)===0,'CONFIG','Provider key file must not be readable by group or others.');
 
 const updates={
   ENABLE_PROVIDER:'true',
@@ -29,6 +36,4 @@ for(const [name,value] of Object.entries(updates)) {
 }
 await writeFile(envPath,lines.filter((line,index,array)=>index<array.length-1 || line!=='').join('\n')+'\n',{mode:0o600});
 await chmod(envPath,0o600).catch(()=>{});
-const mode=(await stat(keyPath)).mode & 0o777;
-ensure(process.platform==='win32' || (mode & 0o077)===0,'CONFIG','Provider key file must not be readable by group or others.');
 console.log('OpenRouter provider enabled locally with the configured model matrix. The key was not copied or printed.');
