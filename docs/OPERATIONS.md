@@ -6,6 +6,8 @@ Use o fluxo de instalação do README. Compose é exclusivo do desenvolvimento: 
 
 `local:init` gera credenciais. `migrate` exige `MIGRATION_DATABASE_URL`. `cli -- setup-local` habilita a role runtime com senha própria e cria apenas o bucket local declarado. `cli -- workspace <nome>` provisiona um workspace explícito. `npm start` verifica schema e abre HTTP; `npm run mcp` abre stdio com `STDIO_PROFILE` configurado.
 
+Para o provedor local, a configuração gerada aponta `PROVIDER_API_KEY_FILE` para `private/openrouter.key`. Esse arquivo é ignorado pelo Git e deve permanecer com permissão 600. No WSL, grave a chave sem colocá-la no histórico do shell com `read -s -p "OpenRouter key: " OPENROUTER_API_KEY; printf '%s\\n' "$OPENROUTER_API_KEY" > private/openrouter.key; chmod 600 private/openrouter.key; unset OPENROUTER_API_KEY; echo`. Depois altere apenas `ENABLE_PROVIDER=true` no `.env` local.
+
 Para criar perfis de escopo restrito, use `npm run cli -- profile <id> <reader|writer|reviewer|admin> <workspace...>`. O token e o JSON contendo seu hash ficam em `private/`. Adicione esse JSON a `AUTH_PROFILES` através de configuração privada e reinicie. `*` dá acesso a todos os workspaces; prefira nomes explícitos em produção. Perfis locais de bootstrap usam `*` por conveniência de desenvolvimento, não são copiados para produção.
 
 ## Produção Railway
@@ -32,8 +34,15 @@ Configure pelo Railway:
 | `MIGRATION_DATABASE_URL` | URL administrativa privada; necessária só no job de migration/pre-deploy |
 | `AUTH_PROFILES` | JSON privado de IDs, hashes, roles e workspaces de produção |
 | `MEMORY_REVIEW_MODE` | `automatic` por padrão; `manual` somente para instalações que desejam revisão separada |
-| `ENABLE_PROVIDER` | `false` inicialmente; habilite após configurar modelo/chave e limites de custo |
-| `PROVIDER_API_KEY`, modelos/dimensão | Valores privados/selecionados pelo operador; sem chave/modelo pessoal distribuído |
+| `ENABLE_PROVIDER` | Ative somente depois de cadastrar a chave OpenRouter |
+| `OPENROUTER_API_KEY` | Segredo privado do Railway; nunca publicar ou colocar no repositório |
+| `OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` |
+| `OPENROUTER_DECISIONS_URL` | `https://openrouter.ai/api/alpha/decisions` |
+| `EMBEDDING_MODEL` / dimensão | `google/gemini-embedding-2` / `1536` |
+| `DECISION_MODEL` | `upstage/solar-decide` |
+| `RERANK_MODEL` | `qwen/qwen3.8-flash` |
+| `KNOWLEDGE_MODEL` | `deepseek/deepseek-v4-flash` |
+| `SYNTHESIS_MODEL` | `stealth/space-bunny-alpha` |
 | `S3_ENDPOINT` | `${{Media.ENDPOINT}}` |
 | `S3_BUCKET` | `${{Media.BUCKET}}` — o nome técnico do S3, não o rótulo exibido no Railway |
 | `S3_ACCESS_KEY_ID` | `${{Media.ACCESS_KEY_ID}}` |
