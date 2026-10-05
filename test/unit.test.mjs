@@ -118,13 +118,14 @@ test('Provider wire contract routes embeddings, decisions, rerank, knowledge and
     assert.deepEqual(await p.embed('synthetic text'),[1,0,0]);await p.embed('synthetic text');
     assert.deepEqual(await p.embedImage('c3ludGhldGlj','image/png'),[1,0,0]);
     assert.equal(await p.decision({content:'fact'},'Is this durable?'),0.84);
-    const ranked=await p.rerank('query',[{id:'a',content:'one'},{id:'b',content:'two'}]);
+    const ranked=await p.rerank('query',[{id:'a',content:'one',lifecycle:{status:'needs_revalidation'}},{id:'b',content:'two'}]);
     assert.equal(ranked.model,'qwen/qwen3.8-flash');assert.equal(ranked.scores.get('a'),0.9);
     const extracted=await p.extract('synthetic');assert.equal(extracted.model,'deepseek/deepseek-v4-flash');
-    const synthesized=await p.synthesize('query',[{id:'a',content:'one'}]);assert.equal(synthesized.model,'synthetic/large:free');assert.equal(synthesized.routing.tier,'free');
+    const synthesized=await p.synthesize('query',[{id:'a',content:'one',lifecycle:{status:'needs_revalidation'}}]);assert.equal(synthesized.model,'synthetic/large:free');assert.equal(synthesized.routing.tier,'free');
     assert.ok(requests.some(x=>x.path==='/decisions' && x.body.model==='upstage/solar-decide'));
     const qwen=requests.find(x=>x.body.model==='qwen/qwen3.8-flash');
-    assert.equal(qwen.body.response_format.type,'json_schema');assert.equal(qwen.body.response_format.json_schema.strict,true);assert.equal(qwen.body.reasoning.enabled,false);
+    assert.equal(qwen.body.response_format.type,'json_schema');assert.equal(qwen.body.response_format.json_schema.strict,true);assert.equal(qwen.body.reasoning.enabled,false);assert.equal(JSON.parse(qwen.body.messages[1].content).candidates[0].lifecycle,'needs_revalidation');
+    const synthesisRequest=requests.find(x=>x.body.model==='openrouter/free');assert.equal(JSON.parse(synthesisRequest.body.messages[1].content).sources[0].lifecycle,'needs_revalidation');
     await assert.rejects(p.embed('fail'),error=>error.code==='PROVIDER' && !error.message.includes(key));
   } finally {server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
 });

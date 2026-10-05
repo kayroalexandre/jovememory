@@ -49,7 +49,8 @@ de caminho são privados; nunca publicar a configuração resolvida.
 1. O conector observa hashes de arquivos Git antes das chamadas e a cada minuto.
 2. Ao gravar fatos ligados a arquivos, o agente fornece `source_refs` com locator/hash
    corrente; o servidor compara à observação na transação.
-3. Fonte alterada/ausente sinaliza `needs_revalidation` em leitura/contexto/manutenção.
+3. Fonte alterada/ausente sinaliza `needs_revalidation` em leitura/contexto/manutenção;
+   rerank e síntese também recebem esse estado para preservar incerteza.
 4. O agente lê código/documentos e decide entre atualizar o fato, revalidá-lo ou
    retirá-lo. O sistema não pede aprovação de memória no modo automático.
 5. Atualização cria sucessor e invalida versão anterior. Registro de mesma kind/key
