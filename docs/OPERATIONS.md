@@ -2,7 +2,7 @@
 
 ## Desenvolvimento local
 
-Use o fluxo de instalação do README. Compose é exclusivo do desenvolvimento: projeto `jovememory-dev`, PostgreSQL em `127.0.0.1:55471`, S3 em `127.0.0.1:59071`, API em `127.0.0.1:3000`. Os serviços e volumes não reutilizam a instalação anterior. Não use `down --volumes` para troubleshooting de uma instalação com dados.
+Use o fluxo de instalação do README. Compose é exclusivo do desenvolvimento: projeto `jovememory-dev`, PostgreSQL em `127.0.0.1:55471`, S3 em `127.0.0.1:59071`, API em `127.0.0.1:3007`. Os serviços e volumes não reutilizam a instalação anterior. Não use `down --volumes` para troubleshooting de uma instalação com dados.
 
 `local:init` gera credenciais. `migrate` exige `MIGRATION_DATABASE_URL`. `cli -- setup-local` habilita a role runtime com senha própria e cria apenas o bucket local declarado. `cli -- workspace <nome>` provisiona um workspace explícito. `npm start` verifica schema e abre HTTP; `npm run mcp` abre stdio com `STDIO_PROFILE` configurado.
 
@@ -31,7 +31,7 @@ O projeto Railway deve ser privado, embora o repositório de código seja públi
 
 A configuração nativa do serviço deve declarar Railpack, build `npm ci --omit=dev`, pre-deploy `npm run migrate`, start `npm start`, healthcheck `/health` (120 segundos), restart ON_FAILURE (5 tentativas) e drenagem de 20 segundos. Banco e Bucket têm configurações próprias.
 
-Serviços novos não leem `railway.json`/`railway.toml`. [.railway/railway.ts](../.railway/railway.ts) usa o SDK IaC fixado como dependência de desenvolvimento. Ele descreve a instalação provisionada e conserva `AUTH_PROFILES`/senha PostgreSQL com `preserve()`. Não distribui segredos nem cria workspace/conteúdo. Para uma instalação nova, crie os recursos e valores privados pelo Railway antes de reconciliar. Credenciais do Bucket são referências nativas; o domínio gerado não é publicado no arquivo.
+Serviços novos não leem `railway.json`/`railway.toml`. [.railway/railway.ts](../.railway/railway.ts) usa o SDK IaC fixado como dependência de desenvolvimento. Ele descreve a instalação provisionada e conserva `AUTH_PROFILES`/`EXTRA_AUTH_PROFILES`/senha PostgreSQL com `preserve()`. Não distribui segredos nem cria workspace/conteúdo. Para uma instalação nova, crie os recursos e valores privados pelo Railway antes de reconciliar. Credenciais do Bucket são referências nativas; o domínio gerado não é publicado no arquivo.
 
 O deploy desta instalação foi configurado pelas ferramentas nativas do Railway. A avaliação local/CI do SDK verifica a autoria; **não prova ausência de drift remoto**. Para assumir gerenciamento IaC, use CLI 5.42.1 ou superior, autentique e vincule explicitamente o projeto/ambiente, execute `railway config plan` e revise o diff antes de `railway config apply`. Não use `--include-variables` em pull, nem publique planos/evidências privados. Omitir recursos em uma configuração de projeto pode removê-los. Push/PR deste repositório não executa apply e CI não recebe credenciais Railway.
 
@@ -46,6 +46,7 @@ Configure pelo Railway:
 | `DATABASE_URL` | URL privada da role runtime `jovememory_app`, com senha exclusiva |
 | `MIGRATION_DATABASE_URL` | URL administrativa privada; necessária só no job de migration/pre-deploy |
 | `AUTH_PROFILES` | JSON privado de IDs, hashes, roles e workspaces de produção |
+| `EXTRA_AUTH_PROFILES` | Perfis adicionais privados; mesclados à base com unicidade obrigatória de IDs/hashes |
 | `MEMORY_REVIEW_MODE` | `automatic` por padrão; `manual` somente para instalações que desejam revisão separada |
 | `ENABLE_PROVIDER` | Ative somente depois de cadastrar a chave OpenRouter |
 | `OPENROUTER_API_KEY` | Segredo privado do Railway; nunca publicar ou colocar no repositório |
@@ -101,3 +102,13 @@ Limiares permanecem declarados/não calibrados; avaliação privada está em [EV
 Antes de cada publicação: revisar arquivos staged, executar `npm run verify`, integração e auditoria de dependências. Hooks podem ser instalados com `git config core.hooksPath .githooks`. Scanner é complementar à revisão de conteúdo pessoal. CI usa permissões somente leitura e não tem segredos de produção. Dependabot sugere atualizações; versões de ações/imagens devem ser revistas, não flutuar automaticamente.
 
 Atualize código, migrations e contratos no mesmo checkpoint. Não edite checksums de migrations aplicadas. Alterações de modelo/dimensão requerem reindexação consciente; mudanças incompatíveis de schema/contrato precisam de plano de dados. O banco novo não reutiliza schema/dumps antigos sem transformação explícita e validação privada.
+
+## Provisionamento por projeto e inferência auxiliar
+
+A versão 0.3.0 exige schema 2 e aplica a migration 002 no pre-deploy. Depois de autenticar um cliente administrativo, `memory_create_workspace({workspace:"example-project"})` cria o registro explicitamente, com auditoria e sem duplicar a operação ao repetir. Conceda o nome ao perfil de projeto em `EXTRA_AUTH_PROFILES`, preservando os perfis da base; cadastro do workspace e autorização são operações distintas. Guarde novos tokens/perfis em armazenamento privado fora do checkout. Não substitua listas de perfis existentes sem reconciliá-las.
+
+O cliente deve associar cada projeto ao workspace correspondente e usar uma credencial limitada a ele. Em OpenCode, configuração por projeto pode sobrescrever o servidor MCP global; use referências a tokens externos e mantenha essas associações fora do Git. A configuração efetiva e o perfil remoto precisam ser verificados no diretório do projeto. Reinicie/recarregue o cliente após alterar configuração; uma sessão existente pode manter ferramentas antigas.
+
+Na configuração local padrão, a API usa porta 3007 para reduzir conflito com servidores de aplicações na porta 3000. Instalações existentes precisam ajustar `PORT` e `PUBLIC_URL` privados juntos; produção conserva a porta nativa configurada pelo Railway.
+
+`memory_capabilities.inference` informa a política: inferência auxiliar somente mediante pedido do agente. Escritas com `enrich:true`, contexto com `synthesize:true` e consolidação com `summarize:true` podem chamar modelos adicionais; as escolhas não exigem revisor humano. Embeddings e rerank continuam padrão, e decisão permanece indicativa. Execute smoke pago separado do healthcheck para validar o provedor e seus fallbacks.

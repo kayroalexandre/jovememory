@@ -2,7 +2,7 @@
 
 Memória persistente para agentes de desenvolvimento: fontes organizadas por workspace, busca híbrida, ativação automática, histórico auditável e retomada de projetos. Implementação nova, com desenvolvimento local e produção no Railway.
 
-O servidor oferece **32 ferramentas MCP** por stdio e Streamable HTTP autenticado. As 28 funções da aplicação anterior foram reconstruídas; quatro ferramentas complementam administração de nós/grafo, indexação e recuperação privada de mídia. Os contratos novos e suas diferenças estão em [PARITY.md](docs/PARITY.md).
+O servidor oferece **33 ferramentas MCP** por stdio e Streamable HTTP autenticado. As 28 funções da aplicação anterior foram reconstruídas; cinco ferramentas complementam provisionamento de workspaces, administração de nós/grafo, indexação e recuperação privada de mídia. Os contratos novos e suas diferenças estão em [PARITY.md](docs/PARITY.md).
 
 ## Instalação local
 
@@ -22,7 +22,7 @@ npm start
 
 `local:init` gera segredos aleatórios em `.env` e `private/`, com permissões restritas. Não sobrescreve configuração existente. O Compose usa serviços, volumes e portas próprios, vinculados a loopback. A instalação começa **sem conteúdo e sem workspaces**; `example-project` só existe se o operador executar o comando acima.
 
-`GET http://127.0.0.1:3000/health` informa prontidão de banco/schema. O endpoint MCP fica em `/mcp` e exige Bearer token. Tokens de cliente ficam em `private/local-reader.token`, `private/local-writer.token`, `private/local-reviewer.token` e `private/local-admin.token`. Nunca coloque seus valores no repositório, em URL ou em mensagens.
+`GET http://127.0.0.1:3007/health` informa prontidão de banco/schema. O endpoint MCP fica em `/mcp` e exige Bearer token. Tokens de cliente ficam em `private/local-reader.token`, `private/local-writer.token`, `private/local-reviewer.token` e `private/local-admin.token`. Nunca coloque seus valores no repositório, em URL ou em mensagens.
 
 ## Fluxo de memória
 
@@ -76,7 +76,7 @@ npm run test:integration
 npm audit --omit=dev
 ```
 
-Integração usa bancos descartáveis e Bucket sintético no Compose próprio; exercita os 32 contratos, clientes MCP reais e backup/restauração. Não usa produção nem faz chamadas pagas. CI executa os mesmos gates. As imagens locais e as ações GitHub são fixadas por digest/commit.
+Integração usa bancos descartáveis e Bucket sintético no Compose próprio; exercita os 33 contratos, clientes MCP reais e backup/restauração. Não usa produção nem faz chamadas pagas. CI executa os mesmos gates. As imagens locais e as ações GitHub são fixadas por digest/commit.
 
 - [Arquitetura e decisões](docs/ARCHITECTURE.md)
 - [Segurança: público versus privado](docs/SECURITY.md)
@@ -87,3 +87,9 @@ Integração usa bancos descartáveis e Bucket sintético no Compose próprio; e
 - [Estado verificado da entrega](docs/STATUS.md)
 
 Licença Apache-2.0. O repositório distribui software e exemplos sintéticos; nenhuma memória, credencial ou configuração pessoal faz parte da distribuição.
+
+## Agente principal e modelos auxiliares
+
+O agente conectado interpreta a tarefa, escolhe ferramentas e responde ao usuário. O jovememory organiza e recupera evidências do workspace: embeddings são criados/atualizados automaticamente após ativação, decisões avaliam escritas sem bloquear a política automática e rerank ordena candidatos por padrão. Inferência auxiliar exige pedido técnico do agente: `memory_context(synthesize:true)` compacta evidências citadas, `memory_write(enrich:true)` e `memory_update_item(enrich:true)` enriquecem conteúdo bruto, e `memory_consolidate(summarize:true)` produz resumo adicional. Os defaults não repetem a análise já feita pelo agente e não exigem aprovação humana. Consulte [AGENTS-INTEGRATION.md](docs/AGENTS-INTEGRATION.md).
+
+Cada projeto usa um workspace explícito e credencial limitada a ele. O banco físico é compartilhado nesta instalação; registros, vetores, mídia e auditoria têm isolamento lógico por workspace com RLS. `memory_create_workspace` é uma operação administrativa idempotente, sem importar conteúdo ou conceder permissões ao cliente automaticamente.

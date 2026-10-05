@@ -14,7 +14,7 @@ const password=randomBytes(32).toString('hex');
 const appPassword=randomBytes(32).toString('hex');
 await writeFile('private/database-app-password',appPassword+'\n',{mode:0o600,flag:'wx'});
 const databaseUrl=(user,secret)=>{const url=new URL('postgresql://127.0.0.1:55471/jovememory_dev');url.username=user;url.password=secret;return url.href;};
-const values={NODE_ENV:'development',HOST:'127.0.0.1',PORT:3000,PUBLIC_URL:'http://127.0.0.1:3000',LOCAL_DATABASE_PASSWORD:password,
+const values={NODE_ENV:'development',HOST:'127.0.0.1',PORT:3007,PUBLIC_URL:'http://127.0.0.1:3007',LOCAL_DATABASE_PASSWORD:password,
   MIGRATION_DATABASE_URL:databaseUrl('jovememory_owner',password),
   DATABASE_URL:databaseUrl('jovememory_app',appPassword),
   AUTH_PROFILES:JSON.stringify(profiles),STDIO_PROFILE:'local-writer',ENABLE_PROVIDER:'false',MEMORY_REVIEW_MODE:'automatic',

@@ -42,7 +42,7 @@ test('OpenRouter model roles default to the planned specialized matrix',()=>{
   assert.match(models.decisionEndpoint,/\/api\/alpha\/decisions$/);
 });
 test('Strict tools reject unknown fields and out-of-range limits without coercion',()=>{
-  assert.equal(Object.keys(TOOLS).length,32);
+  assert.equal(Object.keys(TOOLS).length,33);
   for(const value of [{workspace:'synthetic-a',query:'source',bogus:true},{workspace:'synthetic-a',query:'source',limit:'10'},{workspace:'synthetic-a',query:'source',limit:101}]) assert.equal(TOOLS.memory_search.schema.safeParse(value).success,false);
 });
 test('Ingestion hash commits to workspace, source and bytes; safe paths and fenced headings',()=>{
@@ -144,4 +144,16 @@ test('Malformed model contracts trigger fallback and cannot introduce unknown ci
   assert.deepEqual(models,['synthetic-primary','synthetic-fallback']);assert.equal(result.model,'synthetic-fallback');
   p.request=async()=>({choices:[{message:{content:JSON.stringify({summary:'Synthetic answer',cited_ids:['unknown']})}}]});
   await assert.rejects(p.synthesize('query',[{id:'source',content:'Synthetic source'}]),{code:'PROVIDER'});
+});
+
+
+test('Auxiliary inference is opt-in and additional scoped profiles preserve existing credentials',()=>{
+  assert.equal(TOOLS.memory_context.schema.parse({workspace:'synthetic-a',query:'context'}).synthesize,false);
+  assert.equal(TOOLS.memory_write.schema.parse({workspace:'synthetic-a',content:'fact'}).enrich,false);
+  assert.equal(TOOLS.memory_consolidate.schema.parse({workspace:'synthetic-a',ids:[crypto.randomUUID(),crypto.randomUUID()]}).summarize,false);
+  const base={id:'synthetic-base',role:'writer',workspaces:['synthetic-a'],sha256:hash('base')};
+  const extra={id:'synthetic-extra',role:'writer',workspaces:['synthetic-b'],sha256:hash('extra')};
+  const env={DATABASE_URL:'unused',AUTH_PROFILES:JSON.stringify([base]),EXTRA_AUTH_PROFILES:JSON.stringify([extra])};
+  assert.deepEqual(config(env).profiles,[base,extra]);
+  assert.throws(()=>config({...env,EXTRA_AUTH_PROFILES:JSON.stringify([base])}),{code:'CONFIG'});
 });
