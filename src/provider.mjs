@@ -24,7 +24,7 @@ const schemas={
 function uniqueModels(...models) { return [...new Set(models.flat().filter(Boolean))]; }
 export function selectFreeModels(models,preferences=FREE_INFERENCE_PREFERENCES,requestBytes=0) {
   const weight=model=>{
-    const sizes=[...(model.id+' '+model.name).matchAll(/(?:^|[-\s])(\d+(?:\.\d+)?)([bt])(?=[-\s]|$)/gi)];
+    const sizes=[...(model.id+' '+model.name).matchAll(/(?:^|[-\s])(\d+(?:\.\d+)?)([bt])(?=[-\s:()_]|$)/gi)];
     return Math.max(0,...sizes.map(x=>Number(x[1])*(x[2].toLowerCase()==='t'?1000:1)));
   };
   const zero=value=>(typeof value==='number' || typeof value==='string' && value.trim()!=='') && Number(value)===0;

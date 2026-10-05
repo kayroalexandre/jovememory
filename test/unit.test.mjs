@@ -163,9 +163,9 @@ test('Auxiliary inference is opt-in and additional scoped profiles preserve exis
 
 test('Free routing filters live zero-price text models and prefers configured capacity before smaller models',()=>{
   const entry=(id,context_length=100000,price='0',output=['text'])=>({id,name:id,context_length,pricing:{prompt:price,completion:price},architecture:{input_modalities:['text'],output_modalities:output}});
-  const rows=[null,{},entry('synthetic/small-8b:free'),entry('synthetic/huge-550b:free'),entry('synthetic/music',100000,'0',['audio']),entry('synthetic/paid',100000,'0.01'),entry('synthetic/mispriced:free',100000,null),entry('synthetic/short-999b:free',2048),entry('openrouter/free')];
-  assert.deepEqual(selectFreeModels(rows,[],1000),['synthetic/huge-550b:free','synthetic/small-8b:free']);
-  assert.deepEqual(selectFreeModels(rows,['synthetic/small-8b:free'],1000),['synthetic/small-8b:free','synthetic/huge-550b:free']);
+  const rows=[null,{},entry('synthetic/a-small-8b:free'),entry('synthetic/z-huge-550b:free'),entry('synthetic/music',100000,'0',['audio']),entry('synthetic/paid',100000,'0.01'),entry('synthetic/mispriced:free',100000,null),entry('synthetic/short-999b:free',2048),entry('openrouter/free')];
+  assert.deepEqual(selectFreeModels(rows,[],1000),['synthetic/z-huge-550b:free','synthetic/a-small-8b:free']);
+  assert.deepEqual(selectFreeModels(rows,['synthetic/a-small-8b:free'],1000),['synthetic/a-small-8b:free','synthetic/z-huge-550b:free']);
   assert.deepEqual(selectFreeModels(rows,[],200000),[]);
 });
 
