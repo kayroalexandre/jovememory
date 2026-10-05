@@ -10,7 +10,7 @@ Um PostgreSQL com pgvector mantém workspaces em tabelas comuns. Cada operação
 
 Apenas `src/store.mjs` escreve SQL de aplicação. Scripts de migration, provisionamento, avaliação e backup são operações administrativas. Migration é explícita, com checksum e advisory lock; o processo HTTP verifica o schema antes de abrir o socket.
 
-Mídia fica em S3 privado. Em produção, o Bucket Railway substitui o MinIO local. PostgreSQL guarda ID, hash, MIME, tamanho, texto e vetor. Não há arquivos pessoais no checkout ou no disco efêmero da aplicação.
+Mídia fica em S3 privado. Em produção, o Bucket Railway substitui o SeaweedFS local. PostgreSQL guarda ID, hash, MIME, tamanho, texto e vetor. Não há arquivos pessoais no checkout ou no disco efêmero da aplicação.
 
 ## Recuperação
 
@@ -39,3 +39,5 @@ Configuração operacional fica no ambiente: `.env` local privado ou variáveis 
 O serviço não usa worker/Redis/cron próprio. Indexação do backlog é explícita via CLI; modelos são APIs externas opcionais. Instalação e testes não geram custos de modelo. O cache de embeddings do processo tem 128 entradas, chave por hash/modelo/dimensão e não registra conteúdo em logs.
 
 Fontes oficiais consultadas para esta topologia: [Railpack](https://docs.railway.com/builds/railpack), [configuração declarativa](https://docs.railway.com/config-as-code/reference), [pgvector](https://docs.railway.com/guides/rag-pipeline-pgvector), [Buckets privados](https://docs.railway.com/storage-buckets), [SDK MCP](https://ts.sdk.modelcontextprotocol.io/server) e [embeddings OpenRouter](https://openrouter.ai/docs/api/api-reference/embeddings/create-embeddings).
+
+Baseline de desenvolvimento/produção preparado: PostgreSQL 17 com pgvector, com a mesma imagem fixada por digest; SeaweedFS local e Bucket Railway em produção usam o mesmo contrato S3. O [quick start oficial do SeaweedFS](https://github.com/seaweedfs/seaweedfs/blob/master/README.md) documenta o modo mini e autenticação por ambiente.

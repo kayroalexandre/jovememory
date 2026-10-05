@@ -50,7 +50,7 @@ Os limiares declarados são escrita **0,60** e travessia **0,75**, ambos **não 
 
 ## Produção Railway
 
-A configuração pública [railway.json](railway.json) usa Railpack, migration anterior ao deploy e healthcheck. A topologia proposta tem um serviço Node, PostgreSQL com pgvector na rede privada e um Bucket Railway privado, com credenciais via variáveis de ambiente/referência. Não usa Compose em produção, MinIO próprio em produção, Redis ou disco persistente da aplicação.
+A configuração pública [railway.json](railway.json) usa Railpack, migration anterior ao deploy e healthcheck. A topologia proposta tem um serviço Node, PostgreSQL com pgvector na rede privada e um Bucket Railway privado, com credenciais via variáveis de ambiente/referência. Não usa Compose em produção, storage próprio em produção, Redis ou disco persistente da aplicação.
 
 Consulte o [procedimento operacional](docs/OPERATIONS.md) antes de ativar. Estar configurado para Railway não comprova um deploy saudável. Dados antigos não são importados automaticamente. PRs públicos não devem receber variáveis ou bancos de produção.
 

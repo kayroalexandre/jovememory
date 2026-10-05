@@ -12,6 +12,8 @@ Não houve leitura/importação de corpus pessoal, migração de dados antigos, 
 
 ## Limites e próximos gates
 
-A configuração Railway é preparação: implantação ativa e smoke remoto precisam ser observados depois da ativação dos recursos. Qualidade de corpus real, capacidade multimodal de um modelo específico, custo/latência e calibração dos limiares não foram medidos. Testes semânticos usam provedor simulado. Restore verificou banco e arquivos; não repopulou Bucket de produção.
+Repositório público novo publicado, com proteção de push contra segredos, alertas de dependências e canal privado de vulnerabilidades habilitados. A configuração Railway está em um projeto privado separado, com aplicação/PostgreSQL/Bucket e referências de variáveis em modo staged. Tokens de produção foram gerados em private/, sem publicar seus valores. Domínio público só pode ser criado após ativar o serviço. A configuração Railway é preparação: implantação ativa e smoke remoto precisam ser observados depois da ativação dos recursos. Qualidade de corpus real, capacidade multimodal de um modelo específico, custo/latência e calibração dos limiares não foram medidos. Testes semânticos usam provedor simulado. Restore verificou banco e arquivos; não repopulou Bucket de produção.
 
 Dados/clientes antigos permanecem na instalação anterior. Uma importação futura precisa de inventário/exportação privados, transformação do schema e conferência de IDs/proveniência/hashes. Não se copia dump/configuração antiga para um repositório público.
+
+O gate inicial no GitHub identificou uma imagem MinIO indisponível em runner sem cache. O S3 local foi substituído por SeaweedFS público com digest fixo, em volume novo, e a integração completa foi repetida. A produção continua usando Bucket nativo.
