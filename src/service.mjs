@@ -115,8 +115,11 @@ export class Service {
         }
         let synthesis=null;
         if(results.length && this.config.provider.enabled) {
-          try {synthesis=await this.provider.synthesize(a.query,results);}
-          catch {search.degraded.push('synthesis_unavailable');}
+          try {
+            synthesis=await this.provider.synthesize(a.query,results);
+            const maxSummaryChars=Math.max(256,Math.min(1600,Math.floor(a.max_bytes/4)));
+            if(synthesis.summary.length>maxSummaryChars) synthesis={...synthesis,summary:synthesis.summary.slice(0,maxSummaryChars)+'...',truncated:true};
+          } catch {search.degraded.push('synthesis_unavailable');}
         }
         return bounded({workspace:w,results,gaps,as_of:search.as_of,evidence:search.evidence,degraded:search.degraded,thresholds:search.thresholds,synthesis},a.max_bytes);
       }
