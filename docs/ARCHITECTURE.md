@@ -40,6 +40,8 @@ Configuração operacional fica no ambiente: `.env` local privado ou variáveis 
 
 O serviço não usa worker/Redis/cron próprio. Indexação do backlog é explícita via CLI; modelos são APIs externas opcionais. Instalação e testes não geram custos de modelo. O cache de embeddings do processo tem 128 entradas, chave por hash/modelo/dimensão e não registra conteúdo em logs.
 
+A camada de modelos é roteada por função, não por um único modelo genérico. Gemini Embedding 2 gera vetores multimodais; Solar Decide atende gates probabilísticos pela Decisions API; Qwen3.8 Flash faz rerank; DeepSeek V4 Flash produz análise auxiliar e resumo de consolidação; Space Bunny Alpha sintetiza contexto com IDs citados. Qwen, DeepSeek e Space Bunny podem servir de fallback entre si em fluxos generativos. Decisions não recebe fallback generativo. Saídas gerativas são auxiliares e nunca substituem conteúdo lossless, hashes ou referências persistidas.
+
 Fontes oficiais consultadas para esta topologia: [Railpack](https://docs.railway.com/builds/railpack), [Infrastructure as Code](https://docs.railway.com/infrastructure-as-code), [pgvector](https://docs.railway.com/guides/rag-pipeline-pgvector), [Buckets privados](https://docs.railway.com/storage-buckets), [SDK MCP](https://ts.sdk.modelcontextprotocol.io/server) e [embeddings OpenRouter](https://openrouter.ai/docs/api/api-reference/embeddings/create-embeddings).
 
 Baseline de desenvolvimento/produção preparado: PostgreSQL 17 com pgvector, com a mesma imagem fixada por digest; SeaweedFS local e Bucket Railway em produção usam o mesmo contrato S3. O [quick start oficial do SeaweedFS](https://github.com/seaweedfs/seaweedfs/blob/master/README.md) documenta o modo mini e autenticação por ambiente.

@@ -159,13 +159,14 @@ export class Store {
       return {complete:true,results};
     });
   }
-  async consolidate(workspace,ids,planHash,actor,automatic=false) {
+  async consolidate(workspace,ids,planHash,actor,automatic=false,modelSummary=null) {
     return this.transaction(workspace,async c=>{
       const sources=await this.eligible(workspace,ids,new Date().toISOString(),c);
       ensure(sources.length===ids.length,'STATE','Consolidation requires active sources.');
       const digest=hash(JSON.stringify(sources.map(s=>({id:s.id,content_hash:s.content_hash,node:s.node}))));
       ensure(digest===planHash,'PLAN','Consolidation preview changed.');
-      return this.create(c,workspace,{content:sources.map(s=>s.content).join('\n\n---\n\n'),kind:'consolidation',metadata:{consolidation:{plan_hash:digest,sources}}},actor,automatic);
+      return this.create(c,workspace,{content:sources.map(s=>s.content).join('\n\n---\n\n'),kind:'consolidation',
+        metadata:{consolidation:{plan_hash:digest,sources,model_summary:modelSummary}}},actor,automatic);
     });
   }
   async addMedia(workspace,data,actor) { return this.transaction(workspace,async c=>{

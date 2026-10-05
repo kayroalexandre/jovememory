@@ -30,6 +30,16 @@ test('Write policy defaults to automatic, accepts manual opt-in and rejects an u
   assert.equal(config({...env,MEMORY_REVIEW_MODE:'manual'}).reviewMode,'manual');
   assert.throws(()=>config({...env,MEMORY_REVIEW_MODE:'unknown'}));
 });
+test('OpenRouter model roles default to the planned specialized matrix',()=>{
+  const env={DATABASE_URL:'unused',AUTH_PROFILES:JSON.stringify([{id:'synthetic-writer',role:'writer',workspaces:['synthetic-a'],sha256:hash('synthetic-token')}])};
+  const models=config(env).provider;
+  assert.equal(models.embeddingModel,'google/gemini-embedding-2');
+  assert.equal(models.decisionModel,'upstage/solar-decide');
+  assert.equal(models.rerankModel,'qwen/qwen3.8-flash');
+  assert.equal(models.knowledgeModel,'deepseek/deepseek-v4-flash');
+  assert.equal(models.synthesisModel,'stealth/space-bunny-alpha');
+  assert.match(models.decisionEndpoint,/\/api\/alpha\/decisions$/);
+});
 test('Strict tools reject unknown fields and out-of-range limits without coercion',()=>{
   assert.equal(Object.keys(TOOLS).length,32);
   for(const value of [{workspace:'synthetic-a',query:'source',bogus:true},{workspace:'synthetic-a',query:'source',limit:'10'},{workspace:'synthetic-a',query:'source',limit:101}]) assert.equal(TOOLS.memory_search.schema.safeParse(value).success,false);
@@ -77,19 +87,36 @@ test('Evaluation distinguishes relevant retrieval from negative queries and keep
   assert.equal(result.recommendation.threshold,0.9);assert.equal(result.holdout.fn,1);assert.equal(result.configuration_changed,false);
 });
 
-test('Provider wire contract handles text/image vectors and redacts rejected remote content',async()=>{
+test('Provider wire contract routes embeddings, decisions, rerank, knowledge and synthesis without leaking remote errors',async()=>{
   const {createServer}=await import('node:http');
   const key='synthetic-private-value',requests=[];
-  const server=createServer(async(req,res)=>{const chunks=[];for await(const part of req) chunks.push(part);const body=JSON.parse(Buffer.concat(chunks));requests.push(body);
+  const server=createServer(async(req,res)=>{const chunks=[];for await(const part of req) chunks.push(part);const body=JSON.parse(Buffer.concat(chunks));requests.push({path:req.url,body});
     res.setHeader('Content-Type','application/json');
-    if(body.input==='fail') {res.writeHead(401);res.end(JSON.stringify({error:key}));}
-    else res.end(JSON.stringify({data:[{embedding:[1,0,0]}]}));});
+    if(body.input==='fail') {res.writeHead(401);res.end(JSON.stringify({error:key}));return;}
+    if(req.url==='/decisions') {res.end(JSON.stringify({answers:{score:{type:'noul',noul:0.84}}}));return;}
+    if(req.url==='/chat/completions') {
+      const byModel={
+        'qwen/qwen3.8-flash':{scores:[{id:'a',score:0.9},{id:'b',score:0.2}]},
+        'deepseek/deepseek-v4-flash':{summary:'Synthetic summary',keywords:['memory'],entities:['Jove']},
+        'stealth/space-bunny-alpha':{summary:'Synthetic context',cited_ids:['a']}
+      };
+      res.end(JSON.stringify({choices:[{message:{content:JSON.stringify(byModel[body.model])}}]}));return;
+    }
+    res.end(JSON.stringify({data:[{embedding:[1,0,0]}]}));
+  });
   server.listen(0,'127.0.0.1');await new Promise(resolve=>server.once('listening',resolve));
   try {
-    const p=new Provider({enabled:true,key,endpoint:`http://127.0.0.1:${server.address().port}`,embeddingModel:'synthetic-model',dimensions:3});
-    assert.deepEqual(await p.embed('synthetic text'),[1,0,0]);await p.embed('synthetic text');assert.equal(requests.length,1);
+    const base=`http://127.0.0.1:${server.address().port}`;
+    const p=new Provider({enabled:true,key,endpoint:base,decisionEndpoint:base+'/decisions',embeddingModel:'google/gemini-embedding-2',dimensions:3,
+      decisionModel:'upstage/solar-decide',rerankModel:'qwen/qwen3.8-flash',knowledgeModel:'deepseek/deepseek-v4-flash',synthesisModel:'stealth/space-bunny-alpha'});
+    assert.deepEqual(await p.embed('synthetic text'),[1,0,0]);await p.embed('synthetic text');
     assert.deepEqual(await p.embedImage('c3ludGhldGlj','image/png'),[1,0,0]);
-    assert.equal(requests[1].input[0].content[0].type,'image_url');
+    assert.equal(await p.decision({content:'fact'},'Is this durable?'),0.84);
+    const ranked=await p.rerank('query',[{id:'a',content:'one'},{id:'b',content:'two'}]);
+    assert.equal(ranked.model,'qwen/qwen3.8-flash');assert.equal(ranked.scores.get('a'),0.9);
+    const extracted=await p.extract('synthetic');assert.equal(extracted.model,'deepseek/deepseek-v4-flash');
+    const synthesized=await p.synthesize('query',[{id:'a',content:'one'}]);assert.equal(synthesized.model,'stealth/space-bunny-alpha');
+    assert.ok(requests.some(x=>x.path==='/decisions' && x.body.model==='upstage/solar-decide'));
     await assert.rejects(p.embed('fail'),error=>error.code==='PROVIDER' && !error.message.includes(key));
   } finally {server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
 });
