@@ -20,6 +20,6 @@ Serviços novos do Railway não aplicam railway.json. A inicialização sem migr
 
 Qualidade de corpus real, capacidade multimodal de um modelo específico, custo/latência e calibração dos limiares não foram medidos. Provedor pago permanece desabilitado; testes semânticos usam provedor simulado. Restore verificou banco e arquivos locais; não repopulou Bucket nem restaurou volume de produção. Política automática de backups nativos não foi configurada/verificada nesta entrega e deve ser definida conforme retenção exigida.
 
-Dados/clientes antigos permanecem na instalação anterior. Uma importação futura precisa de inventário/exportação privados, transformação do schema e conferência de IDs/proveniência/hashes. Não se copia dump/configuração antiga para um repositório público.
+A instalação anterior foi retirada por solicitação explícita do operador, sem importar seu corpus. Checkout/histórico Git local, dados, backups, credenciais locais, contêineres, volumes e caches identificados foram removidos. Registros locais dos clientes apontam para esta instalação nova. O repositório remoto anterior não está mais disponível; esta entrega continua sem corpus antigo.
 
 O gate inicial no GitHub identificou uma imagem MinIO indisponível em runner sem cache. O S3 local foi substituído por SeaweedFS público com digest fixo, em volume novo, e a integração completa foi repetida. A produção continua usando Bucket nativo.
