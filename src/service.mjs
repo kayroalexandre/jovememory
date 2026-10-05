@@ -97,6 +97,8 @@ export class Service {
     arms.temporal=(await this.store.eligible(a.workspace,[...new Set([...seeds,...arms.graph.map(r=>r.id)])],asOf))
       .sort((x,y)=>new Date(y.created_at)-new Date(x.created_at));
     let results=fuse(arms,a.limit);
+    const sources=await this.store.sourceMap(a.workspace);
+    results=results.map(item=>({...item,lifecycle:lifecycle(item,sources)}));
     if(a.rerank!==false && this.config.provider.enabled && results.length) {
       try {
         const ranked=await this.provider.rerank(a.query,results);
@@ -105,8 +107,6 @@ export class Service {
           .sort((x,y)=>y.rerank_score-x.rerank_score);
       } catch {degraded.push('rerank_unavailable');}
     }
-    const sources=await this.store.sourceMap(a.workspace);
-    results=results.map(item=>({...item,lifecycle:lifecycle(item,sources)}));
     return {workspace:a.workspace,results,as_of:asOf,degraded,thresholds:this.config.thresholds,evidence:{...evidence,retrieval_incomplete:degraded.length>0},
       lexical_engine:'postgresql_portuguese_fts',vector_engine:'pgvector_exact',vector_similarity_floor:null};
   }
