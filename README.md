@@ -42,9 +42,21 @@ printf '%s' '{"workspace":"example-project","content":"Decisão sintética: usar
 
 Para integração stdio, execute `npm run mcp` no diretório da instalação com `STDIO_PROFILE` explícito. O perfil padrão gerado é `local-writer`; clientes só de leitura devem escolher `local-reader`. Acesso ao processo/ambiente local é uma fronteira confiável. Veja [integração de agentes](docs/AGENTS-INTEGRATION.md).
 
-## Modelos opcionais
+## Modelos OpenRouter
 
-Sem provedor, busca textual, grafo, recência, revisão e continuidade funcionam. Para embeddings, gate indicativo e rerank, configure explicitamente `ENABLE_PROVIDER=true`, `PROVIDER_API_KEY`, `EMBEDDING_MODEL`, `EMBEDDING_DIMENSIONS` e `DECISION_MODEL`. O modelo deve suportar o contrato correspondente; imagem exige embeddings multimodais. Não há modelos/contas/chaves pessoais distribuídos.
+Quando `ENABLE_PROVIDER=true`, o Jove Memory usa uma matriz explícita de modelos especializados:
+
+| Papel | Modelo | Uso |
+| --- | --- | --- |
+| Embeddings | `google/gemini-embedding-2` | Busca semântica e mídia multimodal, com 1536 dimensões |
+| Decisions | `upstage/solar-decide` | Gate de escrita e travessia entre workspaces pela Decisions API |
+| Rerank | `qwen/qwen3.8-flash` | Reordenação opcional dos candidatos recuperados |
+| Knowledge | `deepseek/deepseek-v4-flash` | Extração de metadata e resumo auxiliar de consolidação |
+| Synthesis | `stealth/space-bunny-alpha` | Síntese do pacote de contexto mantendo IDs de evidência |
+
+Os três modelos generativos podem assumir fallback entre si dentro de suas tarefas. O modelo de decisão não recebe fallback generativo, porque o fluxo depende da probabilidade estruturada da Decisions API. Embeddings, fontes originais e conteúdo lossless continuam sendo a base persistida; resumos de modelo são metadata auxiliar e nunca substituem a evidência original.
+
+Produção usa `OPENROUTER_API_KEY` como variável privada do Railway. Desenvolvimento local pode usar a mesma variável no processo ou `PROVIDER_API_KEY_FILE=private/openrouter.key`, mantendo o segredo fora de `.env` e do Git. O código continua aceitando `PROVIDER_API_KEY` como alias legado.
 
 `npm run index -- example-project local-admin` indexa itens aceitos. Chamadas externas podem ter custo. Modelos distintos e dimensões diferentes não são comparados. Falhas semânticas são declaradas, preservando a recuperação textual; a travessia entre workspaces fecha quando seu gate falha.
 
