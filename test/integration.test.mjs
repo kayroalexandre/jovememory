@@ -185,8 +185,7 @@ test('Isolated database, object storage, MCP and backup lifecycle',async t=>{
       assert.equal(result.sha256,hash(bytes));assert.equal((await call('memory_search_media',{workspace:'synthetic-a',query:'cobalt transcript'},reader)).results[0].id,mediaId);
       await assert.rejects(call('memory_read_media',{workspace:'synthetic-b',id:mediaId},reader),{code:'FORBIDDEN'});
     });
-    await t.test('PDF parser extracts a synthetic text layer without cloud calls',async()=>{
-      const stream='BT /F1 12 Tf 72 720 Td (Synthetic PDF copper evidence.) Tj ET';
+    await t.test('PDF parser extracts a synthetic text layer without cloud calls',async()=>{      const stream='BT /F1 12 Tf 72 720 Td (Synthetic PDF copper evidence.) Tj ET';
       const objects=['<< /Type /Catalog /Pages 2 0 R >>','<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
         '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>',
         `<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`,'<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>'];
@@ -659,6 +658,29 @@ test('Isolated database, object storage, MCP and backup lifecycle',async t=>{
       } finally {
         await client.close();http.closeAllConnections();await new Promise(resolve=>http.close(resolve));await rm(folder,{recursive:true,force:true});
       }
+    });
+    await t.test('Image signatures are verified and a broken PDF degrades without losing bytes',async()=>{
+      // Real 1x1 PNG: magic bytes plus IHDR/IEND, so the signature check and the object roundtrip
+      // are exercised with a genuine file rather than a bare prefix.
+      const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==','base64');
+      const pngAttachment=await call('memory_attach_media',{workspace:'synthetic-a',item_id:itemId,base64:png.toString('base64'),mime:'image/png'});
+      assert.equal(pngAttachment.extraction_status,'not_available');
+      const pngBack=await call('memory_read_media',{workspace:'synthetic-a',id:pngAttachment.media.id},reader);
+      assert.ok(Buffer.from(pngBack.base64,'base64').equals(png),'PNG bytes did not roundtrip.');
+      // The same bytes under a mismatched MIME are refused by the signature check.
+      await assert.rejects(call('memory_attach_media',{workspace:'synthetic-a',item_id:itemId,base64:png.toString('base64'),mime:'image/jpeg'}),{code:'MEDIA'});
+      // A minimal RIFF/WEBP container passes its signature check.
+      const webp=Buffer.concat([Buffer.from('RIFF'),Buffer.from([24,0,0,0]),Buffer.from('WEBPVP8 '),Buffer.alloc(16)]);
+      const webpAttachment=await call('memory_attach_media',{workspace:'synthetic-a',item_id:itemId,base64:webp.toString('base64'),mime:'image/webp'});
+      assert.equal(webpAttachment.extraction_status,'not_available');
+      // A PDF that starts with the magic but cannot be parsed keeps its bytes and declares the failure.
+      const broken=Buffer.from('%PDF-1.4\nthis is not a parsable document\n');
+      const brokenAttachment=await call('memory_attach_media',{workspace:'synthetic-a',item_id:itemId,base64:broken.toString('base64'),mime:'application/pdf'});
+      assert.equal(brokenAttachment.extraction_status,'pdf_extraction_unavailable');
+      const brokenBack=await call('memory_read_media',{workspace:'synthetic-a',id:brokenAttachment.media.id},reader);
+      assert.ok(Buffer.from(brokenBack.base64,'base64').equals(broken),'A broken PDF lost its bytes.');
+      // It must not surface in media search: there is no extracted text to match.
+      assert.equal((await call('memory_search_media',{workspace:'synthetic-a',query:'parsable document'},reader)).results.some(r=>r.id===brokenAttachment.media.id),false);
     });
     await t.test('Soft deletion removes parent media from retrieval without erasing history',async()=>{
       await call('memory_delete',{workspace:'synthetic-a',id:itemId,reason:'Synthetic deletion'},reviewer);

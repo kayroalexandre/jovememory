@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.5.5 — 2026-10-08
+
+Backup de produção executado e verificado; gaps de teste de mídia fechados; catálogo
+gratuito medido. Sem mudança de código em produção — esta release é verificação e
+documentação.
+
+- **Backup de produção, executado e verificado.** PITR nativo da Railway é inviável: roda
+  só nas imagens de banco dela, e a imagem pgvector fixada por digest não é uma delas —
+  trocar de imagem regrediria a busca semântica, o recurso central. A política desta
+  instalação é o snapshot do próprio projeto, por túnel SSH temporário: primeiro backup de
+  produção com 11 tabelas e 1 objeto de mídia, restaurado em banco descartável com
+  `database_fingerprints: matched` e `media_hashes: matched`. Credenciais só em memória do
+  processo; chave SSH registrada, usada e **removida** — nenhum acesso permanente ficou.
+- **Procedimento completo documentado** em `OPERATIONS.md`, incluindo o bloqueador de PITR,
+  os quatro passos do túnel e a remoção obrigatória da chave.
+- **Deploy automático:** verificado que nem a API do GitHub nem a da Railway permitem
+  conceder acesso do GitHub App programaticamente. O passo exato do dashboard ficou
+  registrado; sem ele, o deploy continua manual pelo procedimento já documentado.
+- **Gaps de teste de mídia fechados:** anexo de PNG real (1x1 válido) com roundtrip de bytes,
+  assinatura WebP mínima, recusa de MIME contraditório à assinatura, e PDF que começa com o
+  magic mas não parseia — bytes preservados, `pdf_extraction_unavailable` declarado, fora
+  da busca de mídia.
+- **Catálogo gratuito medido** com o filtro do próprio projeto contra o catálogo vivo: 469
+  modelos, exatamente 3 candidatos — as três preferências configuradas, todas presentes.
+  O limite de 3 não exclui nada hoje; documentado quando passaria a truncar.
+
+- **Medido o limite de três candidatos** da rota gratuita contra o catálogo vivo: 3 de 3
+  preferências presentes; nada truncado hoje.
+- **Backup de produção executado e verificado:** PITR nativo é inviável com a imagem
+  pgvector (bloqueador da Railway); a política é o snapshot do próprio projeto, por túnel
+  SSH temporário, com restore conferido por fingerprint e sem acesso permanente. Procedimento
+  completo em `OPERATIONS.md`.
+- **Cobertos os gaps de teste de mídia:** PNG real (1x1 válido), assinatura WebP, recusa de
+  MIME contraditório e PDF quebrado que preserva os bytes e declara
+  `pdf_extraction_unavailable`.
+
+## 0.5.4 — 2026-10-08
 ## 0.5.4 — 2026-10-08
 
 O broker re-matricula sozinho quando a credencial de projeto é rotacionada.
