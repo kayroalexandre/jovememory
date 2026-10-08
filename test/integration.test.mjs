@@ -622,6 +622,44 @@ test('Isolated database, object storage, MCP and backup lifecycle',async t=>{
         assert.equal(orphanWrite.isError,true);
       } finally {await orphanClient.close();orphanHttp.closeAllConnections();await new Promise(resolve=>orphanHttp.close(resolve));await rm(orphanBase,{recursive:true,force:true});}
     });
+    await t.test('The broker re-enrolls by itself after the server rotates the signing key',async()=>{
+      const folder=await mkdtemp(tmpdir()+'/jovememory-rotate-'),root=folder+'/repo';await mkdir(root);
+      const git=args=>execFileSync('git',['-C',root,...args],{stdio:['ignore','pipe','ignore']});
+      git(['init']);git(['remote','add','origin','https://github.com/example/synthetic-rotation.git']);
+      await writeFile(root+'/README.md','Synthetic rotation source.');git(['add','README.md']);
+      const controllerToken=randomBytes(32).toString('base64url');
+      const controller={id:'synthetic-rot-controller',role:'provisioner',workspaces:['*'],sha256:hash(controllerToken)};
+      // Two signing keys: the second simulates a credential rotation while the broker is live.
+      // config() carries the parsed key as projectKey (a Buffer), not the raw variable.
+      const cfgA={...c,reviewMode:'automatic',profiles:[controller],projectKey:Buffer.from(randomBytes(32).toString('hex'),'hex')};
+      const cfgB={...c,reviewMode:'automatic',profiles:[controller],projectKey:Buffer.from(randomBytes(32).toString('hex'),'hex')};
+      let http=createApp(new Service(store,cfgA),cfgA).listen(0,'127.0.0.1');await new Promise(resolve=>http.once('listening',resolve));
+      const port=http.address().port,endpoint=`http://127.0.0.1:${port}/mcp`;
+      await writeFile(folder+'/controller.token',controllerToken,{mode:0o600});
+      await writeFile(folder+'/broker.json',JSON.stringify({endpoint,provisioner_token_file:folder+'/controller.token'}),{mode:0o600});
+      const client=new Client({name:'synthetic-rotation-agent',version:'1'});
+      try {
+        await client.connect(new StdioClientTransport({command:process.execPath,args:[process.cwd()+'/src/project-bridge.mjs'],cwd:root,env:{...process.env,JOVEMEMORY_BROKER_CONFIG:folder+'/broker.json'},stderr:'pipe'}));
+        const first=await client.callTool({name:'memory_write',arguments:{content:'Synthetic rotation note one.'}});
+        assert.equal(first.structuredContent.workspace,'synthetic-rotation');
+        // Rotate the signing key under the live broker: the issued JWT is now invalid.
+        http.closeAllConnections();await new Promise(resolve=>http.close(resolve));
+        http=createApp(new Service(store,cfgB),cfgB).listen(port,'127.0.0.1');await new Promise(resolve=>http.once('listening',resolve));
+        // The stale credential fails once...
+        const rejected=await client.callTool({name:'memory_write',arguments:{content:'Synthetic rotation note two.'}});
+        assert.equal(rejected.isError,true,'The rotated-away credential was still accepted.');
+        // ...and the next call re-enrolls by itself, without restarting the broker.
+        const healed=await client.callTool({name:'memory_write',arguments:{content:'Synthetic rotation note three.'}});
+        assert.equal(healed.isError,undefined,`The broker did not self-heal: ${JSON.stringify(healed.content?.[0]?.text || '')}`);
+        assert.equal(healed.structuredContent.workspace,'synthetic-rotation');
+        const search=await client.callTool({name:'memory_search',arguments:{query:'rotation note three'}});
+        assert.ok(search.structuredContent.results.some(x=>x.content.includes('Synthetic rotation note three.')),'The healed write was not retrievable.');
+        const status=(await client.callTool({name:'memory_connection_status',arguments:{}})).structuredContent;
+        assert.equal(status.bound,true);assert.equal(status.source_observation_error,null);
+      } finally {
+        await client.close();http.closeAllConnections();await new Promise(resolve=>http.close(resolve));await rm(folder,{recursive:true,force:true});
+      }
+    });
     await t.test('Soft deletion removes parent media from retrieval without erasing history',async()=>{
       await call('memory_delete',{workspace:'synthetic-a',id:itemId,reason:'Synthetic deletion'},reviewer);
       assert.equal((await call('memory_read',{workspace:'synthetic-a',id:itemId},reader)).item.status,'deleted');

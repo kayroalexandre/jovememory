@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.5.4 — 2026-10-08
+
+O broker re-matricula sozinho quando a credencial de projeto é rotacionada.
+
+- O deploy de 0.5.3 rotacionou a senha da role runtime e, com ela, a chave de assinatura
+  dos JWTs de projeto — comportamento documentado do modo `database-derived`. O que não
+  estava coberto: o broker só re-matriculava quando o token estava perto de expirar, então
+  uma credencial rejeitada o deixava quebrado até reiniciar o cliente ou vencer o TTL de um
+  dia. Descoberto no smoke do próprio deploy.
+- Agora uma falha de transporte ou credencial no caminho do projeto descarta a conexão, e a
+  chamada seguinte tenta re-matricular antes de recusar. Uma rotação custa uma chamada
+  falhada em vez de um reinício. `memory_connection_status` também tenta curar uma conexão
+  descartada, em vez de só reportá-la.
+- Teste de integração gira a chave de assinatura sob um broker vivo: a primeira escrita
+  falha com a credencial velha e a seguinte funciona sem reiniciar. Verificado que o teste
+  falha com a correção removida.
+
 ## 0.5.3 — 2026-10-08
 
 Correção da armadilha de bootstrap e decisão de arquitetura sobre memória de
