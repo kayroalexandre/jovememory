@@ -24,9 +24,33 @@ Gates após a mudança: 32 testes unitários e 28 resultados TAP de integração
 cenários, cobrindo as 43 ferramentas. O teste novo foi verificado reintroduzindo a
 regressão: remover o encaminhamento interno faz o cenário falhar.
 
-Esta release ainda não foi implantada. A ordem correta após o deploy é configurar o bloco
-`observer`, confirmar `observatory.connected` e só então remover a entrada
-`jovememory-observatory` do cliente.
+## Publicação — 2026-10-08
+
+0.5.1 e 0.5.2 foram mergeadas em `main` (PR #10, rebase — o repositório não permite merge
+commit e squash colapsaria as duas releases) e deployadas em produção pelo CLI, com o
+deployment observado até `SUCCESS`. O `main` saiu de 0.4.0 para 0.5.2, reconciliando-o com
+uma produção que já rodava 0.5.0 sem que o `main` jamais a contivesse.
+
+Smoke contra produção: `/health` anônimo 200, `POST /mcp` sem credencial e com token
+inválido 401, método não permitido 401, `Origin` externa 403, `memory_version` 0.5.2,
+`memory_capabilities.limits` com `provider_candidate_bytes` (1048576), `memory_doctor` com
+schema 3 e `database: ready`. Smoke comportamental da herança de validade executado em
+produção: um item com prazo foi substituído omitindo a janela e o sucessor herdou a
+validade — o comportamento que a correção de 0.5.1 exige — e os itens de teste foram
+retirados em seguida.
+
+O observatório passou a ser servido pelo broker. O bloco `observer` foi adicionado ao
+`broker-production.json`, verificado com um processo bridge de teste contra produção
+(`observatory.connected: true`, `memory_overview` no catálogo, agregados sem conteúdo de
+corpus, workspace estrangeiro recusado) e só então a entrada `jovememory-observatory` foi
+removida do cliente. O token de leitura global deixou de estar no processo do agente.
+
+A investigação da topologia resolveu a contradição que bloqueava o merge: o projeto
+Railway não tem acesso ao repositório — não existe gatilho de repositório, `githubRepoDeploy`
+falha com "no one in the project has access to it", e **merge em `main` não deploya**. Os
+metadados de branch dos deployments antigos não descrevem de onde veio o conteúdo; houve
+deploy registrado como `main` para um commit que nunca esteve no `main` do GitHub. O
+procedimento real de deploy e o smoke mínimo estão documentados em `OPERATIONS.md`.
 
 ## Correções de 0.5.1
 
