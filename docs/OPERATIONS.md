@@ -4,6 +4,15 @@
 
 Use o fluxo de instalação do README. Compose é exclusivo do desenvolvimento: projeto `jovememory-dev`, PostgreSQL em `127.0.0.1:55471`, S3 em `127.0.0.1:59071`, API em `127.0.0.1:3007`. Os serviços e volumes não reutilizam a instalação anterior. Não use `down --volumes` para troubleshooting de uma instalação com dados.
 
+Este checkout é o ambiente de desenvolvimento. A instância que os agentes acessam por
+MCP é a de produção no Railway, e a escolha é feita na configuração do cliente, pelo
+arquivo de broker: `broker-production.json` aponta para a Railway e `broker-development.json`
+para `http://127.0.0.1:3007/mcp`. Verificar para qual endpoint o broker efetivo aponta é
+parte de entender o que o agente está gravando. Registros escritos enquanto o broker aponta
+para produção descrevem código que pode ainda não estar implantado; declare o estado de
+deploy ao afirmar que uma correção está em vigor. A topologia observada e as opções de
+separação estão em [PLAN.md](PLAN.md).
+
 `local:init` gera credenciais. `migrate` exige `MIGRATION_DATABASE_URL`. `cli -- setup-local` habilita a role runtime com senha própria e cria apenas o bucket local declarado. `cli -- workspace <nome>` provisiona um workspace explícito. `npm start` verifica schema e abre HTTP; `npm run mcp` abre stdio com `STDIO_PROFILE` configurado.
 
 A chave local fica fora do checkout, em `~/.config/jovememory/secrets/openrouter.key` (diretório 700, arquivo 600). O `.env` guarda apenas o caminho absoluto em `PROVIDER_API_KEY_FILE`. Para cadastrá-la sem exibição ou histórico:
@@ -21,7 +30,9 @@ npm run provider:enable
 
 O comando de ativação recusa um arquivo dentro do projeto, inclusive por symlink. `ENABLE_PROVIDER=true` sem chave utilizável bloqueia a inicialização; cadastrar a variável vazia não basta. Também aceita `PROVIDER_API_KEY_FILE` externo explicitamente definido no processo. Nunca copie a chave para o repositório ou para o `.env`.
 
-Para criar perfis de escopo restrito, use `npm run cli -- profile <id> <reader|writer|reviewer|admin> <workspace...>`. O token e o JSON contendo seu hash ficam em `private/`. Adicione esse JSON a `AUTH_PROFILES` através de configuração privada e reinicie. `*` dá acesso a todos os workspaces; prefira nomes explícitos em produção. Perfis locais de bootstrap usam `*` por conveniência de desenvolvimento, não são copiados para produção.
+Para criar perfis de escopo restrito, use `npm run cli -- profile <id> <reader|writer|reviewer|admin|observer|provisioner> <workspace...>`. O token e o JSON contendo seu hash ficam em `private/`. Adicione esse JSON a `AUTH_PROFILES` através de configuração privada e reinicie. `*` dá acesso a todos os workspaces; prefira nomes explícitos em produção. Perfis locais de bootstrap usam `*` por conveniência de desenvolvimento, não são copiados para produção.
+
+Copiar `.env.example` para `.env` não substitui `npm run local:init`, que gera as senhas e perfis e também escreve `LOCAL_DATABASE_PASSWORD`. Sem essa variável o Compose não sobe. `npm run dev` reinicia o servidor HTTP ao alterar código.
 
 ## Produção Railway
 
@@ -31,7 +42,7 @@ O projeto Railway deve ser privado, embora o repositório de código seja públi
 
 A configuração nativa do serviço deve declarar Railpack, build `npm ci --omit=dev`, pre-deploy `npm run migrate`, start `npm start`, healthcheck `/health` (120 segundos), restart ON_FAILURE (5 tentativas) e drenagem de 20 segundos. Banco e Bucket têm configurações próprias.
 
-Serviços novos não leem `railway.json`/`railway.toml`. [.railway/railway.ts](../.railway/railway.ts) usa o SDK IaC fixado como dependência de desenvolvimento. Ele descreve a instalação provisionada e conserva `AUTH_PROFILES`/`EXTRA_AUTH_PROFILES`/senha PostgreSQL com `preserve()`. Não distribui segredos nem cria workspace/conteúdo. Para uma instalação nova, crie os recursos e valores privados pelo Railway antes de reconciliar. Credenciais do Bucket são referências nativas; o domínio gerado não é publicado no arquivo.
+Serviços novos não leem `railway.json`/`railway.toml`. [.railway/railway.ts](../.railway/railway.ts) usa o SDK IaC fixado como dependência de desenvolvimento. Ele descreve a instalação provisionada e conserva com `preserve()` os valores privados: `AUTH_PROFILES`, `EXTRA_AUTH_PROFILES`, `CONTROL_AUTH_PROFILES`, `ENABLE_PROVIDER`, `PROJECT_TOKEN_SECRET`, `OPENROUTER_API_KEY` e `DATABASE_URL_PRIVATE`. Não distribui segredos nem cria workspace/conteúdo. Para uma instalação nova, crie os recursos e valores privados pelo Railway antes de reconciliar. Credenciais do Bucket são referências nativas; o domínio gerado não é publicado no arquivo.
 
 O deploy desta instalação foi configurado pelas ferramentas nativas do Railway. A avaliação local/CI do SDK verifica a autoria; **não prova ausência de drift remoto**. Para assumir gerenciamento IaC, use CLI 5.42.1 ou superior, autentique e vincule explicitamente o projeto/ambiente, execute `railway config plan` e revise o diff antes de `railway config apply`. Não use `--include-variables` em pull, nem publique planos/evidências privados. Omitir recursos em uma configuração de projeto pode removê-los. Push/PR deste repositório não executa apply e CI não recebe credenciais Railway.
 
@@ -97,7 +108,7 @@ Para volumes PostgreSQL Railway, habilite backups nativos conforme retenção/re
 
 ## Indexação e qualidade
 
-`npm run index -- <workspace> <perfil-admin>` percorre memórias aceitas elegíveis e indexa as sem o modelo ativo. `--force` refaz também vetores do mesmo modelo, necessário ao mudar dimensão. Cada item é verificado novamente por hash ao persistir. Falha interrompe o comando sem invalidar itens; repetir retoma com o modelo ativo. Indexação é paga quando o provedor está habilitado e nunca acontece na instalação.
+`npm run index -- <workspace> <perfil-admin>` percorre memórias aceitas elegíveis e indexa as sem o modelo ativo. `--force` refaz também vetores do mesmo modelo, necessário ao mudar dimensão. Cada item é verificado novamente por hash ao persistir. O comando pagina com `as_of` retornado pela página anterior; alterar ou omitir esse valor faz o cursor ser recusado. Falha interrompe o comando sem invalidar itens; repetir retoma com o modelo ativo. Indexação é paga quando o provedor está habilitado e nunca acontece na instalação.
 
 Limiares permanecem declarados/não calibrados; avaliação privada está em [EVALUATION.md](EVALUATION.md). Não diminua números para simular sucesso de recuperação.
 

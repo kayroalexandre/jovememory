@@ -17,6 +17,18 @@ export function isEligible(item,asOf=new Date().toISOString()) {
   return Boolean(item && item.status==='active' && (!item.valid_from || new Date(item.valid_from)<=new Date(asOf)) &&
     (!item.valid_until || new Date(item.valid_until)>new Date(asOf)));
 }
+// Model calls receive truncated candidate text; the full item stays available by id for re-reading.
+export function clampForRerank(items,budget) {
+  if(!budget) return items;
+  const perItem=Math.max(256,Math.floor(budget/2/items.length));
+  return items.map(item=>{
+    const bytes=Buffer.byteLength(item.content || '');
+    if(bytes<=perItem) return item;
+    let excerpt='',used=0;
+    for(const character of item.content) {const size=Buffer.byteLength(character);if(used+size>perItem) break;excerpt+=character;used+=size;}
+    return {...item,content:excerpt,content_truncated:true,content_bytes:bytes};
+  });
+}
 export class Service {
   constructor(store,config,{provider,media}={}) {
     this.store=store;this.config=config;this.provider=provider || new Provider(config.provider);this.media=media || new Media(config.s3);
@@ -76,12 +88,23 @@ export class Service {
     return values;
   }
   async diagnose(workspace,references) {
-    const values=[];if(!references?.length) return values;const sources=await this.store.sourceMap(workspace);
+    const values=[];if(!references?.length) return values;
+    const sources=await this.store.sourceMap(workspace),items=await this.store.readMany(workspace,references.map(x=>x.id));
     for(const ref of references || []) {
-      const item=await this.store.read(workspace,ref.id);
+      const item=items.get(ref.id) || null;
       values.push({...ref,current_hash:item?.content_hash || null,eligible:isEligible(item),unchanged:item?.content_hash===ref.content_hash,source_lifecycle:item?lifecycle(item,sources).status:'missing'});
     }
     return values;
+  }
+  // Diagnose every page's references with one source read and one batched item read.
+  async diagnoseAll(workspace,groups,sources) {
+    const map=sources || await this.store.sourceMap(workspace);
+    const ids=groups.flatMap(group=>group.map(ref=>ref.id));
+    const items=await this.store.readMany(workspace,ids);
+    return groups.map(group=>group.map(ref=>{
+      const item=items.get(ref.id) || null;
+      return {...ref,current_hash:item?.content_hash || null,eligible:isEligible(item),unchanged:item?.content_hash===ref.content_hash,source_lifecycle:item?lifecycle(item,map).status:'missing'};
+    }));
   }
   async search(a) {
     const asOf=a.as_of || new Date().toISOString(), size=Math.min(100,a.limit*3);
@@ -101,7 +124,8 @@ export class Service {
     results=results.map(item=>({...item,lifecycle:lifecycle(item,sources)}));
     if(a.rerank!==false && this.config.provider.enabled && results.length) {
       try {
-        const ranked=await this.provider.rerank(a.query,results);
+        // Keep the outbound request inside the provider byte budget instead of failing the whole search.
+        const ranked=await this.provider.rerank(a.query,clampForRerank(results,this.config.rerankPayloadBytes));
         if(ranked.model!==this.config.provider.rerankModel) degraded.push('rerank_fallback');
         results=results.map(item=>({...item,rerank_score:ranked.scores.get(item.id) ?? 0,rerank_model:ranked.model}))
           .sort((x,y)=>y.rerank_score-x.rerank_score);
@@ -143,8 +167,9 @@ export class Service {
       case 'memory_revalidate':return {workspace:w,...await s.revalidate(w,a.id,a.content_hash,a.source_refs,actor,a.reason)};
       case 'memory_retire':ensure(automatic || p.role==='admin','REVIEW','Retirement needs automatic policy or an administrator in manual mode.');return {workspace:w,...await s.mutate(w,a.id,'retire',actor,{reason:a.reason})};
       case 'memory_maintenance': {
-        const page=await s.page(w,{...a,include_ineligible:true}),sources=await s.sourceMap(w),items=[];
-        for(const item of page.items) items.push({id:item.id,kind:item.kind,created_at:item.created_at,lifecycle:lifecycle(item,sources),reference_diagnostics:await this.diagnose(w,item.metadata.references)});
+        const page=await s.page(w,{...a,include_ineligible:true}),sources=await s.sourceMap(w);
+        const diagnostics=await this.diagnoseAll(w,page.items.map(item=>item.metadata.references || []),sources);
+        const items=page.items.map((item,index)=>({id:item.id,kind:item.kind,created_at:item.created_at,lifecycle:lifecycle(item,sources),reference_diagnostics:diagnostics[index]}));
         return {workspace:w,items,next_cursor:page.next_cursor,as_of:page.as_of,page_only:true,evidence};
       }
       case 'memory_create_workspace':return s.workspace(w,actor);
@@ -163,7 +188,12 @@ export class Service {
       case 'memory_list_proposed':return {workspace:w,...await s.page(w,{...a,status:'proposed'})};
       case 'memory_update_item': {
         const {gate,enrichment,metadata}=await this.evaluateWrite(w,a);
-        return this.writeResult(w,await s.update(w,a.id,{content:a.content,valid_from:a.valid_from,valid_until:a.valid_until,source_refs:a.source_refs,gate,metadata},a.reason,actor,automatic),{gate,enrichment});
+        // Omitted validity must inherit the predecessor's window instead of erasing it.
+        const window={};
+        if(a.valid_from!==undefined) window.valid_from=a.valid_from;
+        if(a.valid_until!==undefined) window.valid_until=a.valid_until;
+        const sourceRefs=a.source_refs===undefined ? {} : {source_refs:a.source_refs};
+        return this.writeResult(w,await s.update(w,a.id,{content:a.content,...window,...sourceRefs,gate,metadata},a.reason,actor,automatic),{gate,enrichment});
       }
       case 'memory_delete':return {workspace:w,...await s.mutate(w,a.id,'delete',actor,{reason:a.reason})};
       case 'memory_move_item':return {workspace:w,...await s.mutate(w,a.id,'move',actor,{node:a.node,reason:a.reason})};
@@ -186,7 +216,8 @@ export class Service {
         let synthesis=null;
         if(a.synthesize && results.length && this.config.provider.enabled) {
           try {
-            synthesis=await this.provider.synthesize(a.query,results);
+            // Clamp only what leaves the process; the returned evidence keeps the full text.
+            synthesis=await this.provider.synthesize(a.query,clampForRerank(results,this.config.rerankPayloadBytes));
             const fallback=this.config.provider.synthesisModel==='openrouter/free' ? synthesis.routing?.paid_fallback:synthesis.model!==this.config.provider.synthesisModel;
             if(fallback) search.degraded.push('synthesis_fallback');
             const maxSummaryChars=Math.max(256,Math.min(1600,Math.floor(a.max_bytes/4)));
@@ -223,12 +254,11 @@ export class Service {
         return this.writeResult(w,await s.propose(w,{content:a.summary,kind:'checkpoint',metadata},actor,automatic));
       }
       case 'memory_resume': {
-        const page=await s.page(w,{...a,kind:'checkpoint'}),checkpoints=[];
-        for(const item of page.items) {
-          if(a.session && item.metadata.session!==a.session) continue;
-          checkpoints.push({...item,lifecycle:lifecycle(item,await s.sourceMap(w)),reference_diagnostics:await this.diagnose(w,item.metadata.references)});
-        }
-        return bounded({workspace:w,checkpoints,next_cursor:page.next_cursor,as_of:page.as_of,evidence},a.max_bytes);
+        const page=await s.page(w,{...a,kind:'checkpoint'});
+        const candidates=a.session ? page.items.filter(item=>item.metadata.session===a.session) : page.items;
+        const sources=await s.sourceMap(w),diagnostics=await this.diagnoseAll(w,candidates.map(item=>item.metadata.references || []),sources);
+        const checkpoints=candidates.map((item,index)=>({...item,lifecycle:lifecycle(item,sources),reference_diagnostics:diagnostics[index]}));
+        return bounded({workspace:w,checkpoints,next_cursor:page.next_cursor,as_of:page.as_of,evidence},a.max_bytes,page.cursorAt);
       }
       case 'memory_record': {
         ensure(a.basis!=='measured' || (a.observed_at && a.references.length),'RECORD','Measured records require observation date and local references.');
@@ -237,14 +267,15 @@ export class Service {
         return this.writeResult(w,await s.record(w,{content:statement,kind:'record',metadata,valid_until:a.expires_at},actor,automatic,replace_key));
       }
       case 'memory_project': {
-        const page=await s.page(w,{...a,kind:'record'}),records=[],ambiguities=[],values=new Map();
-        for(const item of page.items) {
+        const page=await s.page(w,{...a,kind:'record'}),ambiguities=[],values=new Map();
+        const sources=await s.sourceMap(w),diagnostics=await this.diagnoseAll(w,page.items.map(item=>item.metadata.references || []),sources);
+        const records=page.items.map((item,index)=>{
           const metadata=item.metadata,logicalKey=metadata.kind+':'+metadata.key;
           if(values.has(logicalKey) && values.get(logicalKey)!==item.content) ambiguities.push({key:logicalKey,id:item.id,reason:'different_active_statements'});
           values.set(logicalKey,item.content);
-          records.push({...item,lifecycle:lifecycle(item,await s.sourceMap(w)),contract_valid:metadata.contract===1 && Boolean(metadata.key && metadata.basis),reference_diagnostics:await this.diagnose(w,metadata.references)});
-        }
-        return bounded({workspace:w,records,ambiguities,page_only:true,next_cursor:page.next_cursor,as_of:page.as_of,evidence},a.max_bytes);
+          return {...item,lifecycle:lifecycle(item,sources),contract_valid:metadata.contract===1 && Boolean(metadata.key && metadata.basis),reference_diagnostics:diagnostics[index]};
+        });
+        return bounded({workspace:w,records,ambiguities,page_only:true,next_cursor:page.next_cursor,as_of:page.as_of,evidence},a.max_bytes,page.cursorAt);
       }
       case 'memory_consolidate': {
         ensure(new Set(a.ids).size===a.ids.length,'INPUT','Consolidation IDs must be unique.');
@@ -262,7 +293,8 @@ export class Service {
       }
       case 'memory_stats':return {workspace:w,...await s.stats(w),thresholds:this.config.thresholds};
       case 'memory_doctor':return {workspace:w,...await s.health(),...await s.stats(w),storage:this.config.s3 ? 'configured_not_probed':'not_configured',provider:this.config.provider.enabled?'configured_not_probed':'disabled',models:publicConfig(this.config).models};
-      case 'memory_mutations':return {workspace:w,mutations:await s.mutations(w,a)};
+      case 'memory_mutations': {const mutations=await s.mutations(w,a);
+        return {workspace:w,mutations,next_after:mutations.length===a.limit?Number(mutations.at(-1).sequence):null};}
       case 'memory_create_node':return {workspace:w,node:await s.node(w,a.node,a.label,a.parent,actor)};
       case 'memory_link': {
         authorize(p,'admin',a.target_workspace);

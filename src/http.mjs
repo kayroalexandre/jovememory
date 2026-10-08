@@ -7,6 +7,9 @@ import { Service } from './service.mjs';
 import { createMcp } from './mcp.mjs';
 export function createApp(service,c) {
   const app=express();app.disable('x-powered-by');let pending=0;
+  let healthy=null;
+  const health=async()=>{ if(healthy && healthy.expires>Date.now()) return healthy.value;
+    const value=await service.store.health();healthy={value,expires:Date.now()+10000};return value; };
   app.use((req,res,next)=>{
     res.set({'Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Referrer-Policy':'no-referrer','Content-Security-Policy':"default-src 'none'; frame-ancestors 'none'"});
     const host=req.headers.host?.split(':')[0];
@@ -14,9 +17,13 @@ export function createApp(service,c) {
     if(req.headers.origin && req.headers.origin!==c.publicUrl.origin) return res.status(403).json({error:'Unrecognized origin'});
     next();
   });
-  app.get('/health',async(req,res)=>{try {await service.store.health();res.json({status:'ready'});}catch {res.status(503).json({status:'unavailable'});}});
+  // Unauthenticated probes must not reach the database on every request.
+  app.get('/health',async(req,res)=>{try {await health();res.json({status:'ready'});}catch {healthy=null;res.status(503).json({status:'unavailable'});}});
   app.use('/mcp',async(req,res,next)=>{
-    const profile=await authenticateProject(req.headers.authorization,c,service.store);
+    const header=req.headers.authorization;
+    if(!/^Bearer [A-Za-z0-9_.-]+$/.test(String(header))) {res.set('WWW-Authenticate','Bearer realm="jovememory"');return res.status(401).json({error:'Authentication required'});}
+    let profile;
+    try {profile=await authenticateProject(header,c,service.store);} catch {profile=null;}
     if(!profile) {res.set('WWW-Authenticate','Bearer realm="jovememory"');return res.status(401).json({error:'Authentication required'});}
     req.profile=profile;next();
   });

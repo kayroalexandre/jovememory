@@ -1,5 +1,6 @@
 import { z } from 'zod';
-const workspace=z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$/);
+import { WORKSPACE_PATTERN } from './config.mjs';
+const workspace=z.string().regex(WORKSPACE_PATTERN);
 const digest=z.string().regex(/^[a-f0-9]{64}$/);
 const locator=z.string().min(1).max(512).refine(v=>!/[\\:\x00-\x1f\x7f]/.test(v) && !v.startsWith('/') && !v.split('/').some(x=>['','..','.'].includes(x)),'Expected a safe repository-relative locator.');
 const source_refs=z.array(z.strictObject({locator,sha256:digest})).max(100);
@@ -49,12 +50,12 @@ const definitions={
   memory_consolidate:['write','Preview and apply a lossless consolidation under the configured write policy.',{workspace,ids:z.array(id).min(2).max(50),dry_run:z.boolean().default(true),plan_hash:z.string().regex(/^[a-f0-9]{64}$/).optional(),summarize:z.boolean().default(false)}],
   memory_doctor:['read','Read-only database/schema health and embedding coverage.',{workspace}],
   memory_stats:['read','Workspace counts, coverage and declared thresholds.',{workspace}],
-  memory_mutations:['read','Append-only audit page.',{workspace,id:id.optional(),operation:z.string().max(64).optional(),limit,after:z.number().int().nonnegative().default(0)}],
+  memory_mutations:['read','Append-only audit page projected to sequence, operation, actor and declared details; item content is not returned.',{workspace,id:id.optional(),operation:z.string().max(64).optional(),limit,after:z.number().int().nonnegative().default(0)}],
   memory_feedback:['write','Audited importance step of 0.05 with a reason.',{workspace,id,useful:z.boolean(),reason}],
   memory_context:['read','Re-read eligible candidates into a bounded evidence package.',{workspace,query,limit,max_bytes,as_of:date.optional(),rerank:z.boolean().default(true),synthesize:z.boolean().default(false)}],
   memory_checkpoint:['write','Save structured continuity with hashed references under the configured write policy.',{workspace,session:z.string().min(1).max(128),title:z.string().min(1).max(256),summary:content,next_steps:z.array(z.string().max(1024)).max(50).default([]),references}],
   memory_resume:['read','Read active checkpoints and diagnose current source eligibility.',{...page,session:z.string().max(128).optional(),max_bytes}],
-  memory_record:['write','Save a typed record; replace the prior active kind/key atomically by default, preserving history. replace_key=false intentionally keeps divergent claims.',{workspace,kind:z.enum(['goal','decision','constraint','evidence','issue','procedure']),key:z.string().min(1).max(200),title:z.string().min(1).max(256),statement:content,basis:z.enum(['asserted','measured','inferred']),authority:z.enum(['canonical','supporting','historical']).default('supporting'),locator:z.string().max(512).optional(),observed_at:date.optional(),expires_at:date.optional(),references,source_refs:source_refs.optional(),replace_key:z.boolean().default(true)}],
+  memory_record:['write','Save a typed record; replace the prior active kind/key atomically by default, preserving history. replace_key=false intentionally keeps divergent claims.',{workspace,kind:z.enum(['goal','decision','constraint','evidence','issue','procedure']),key:z.string().min(1).max(200),title:z.string().min(1).max(256),statement:content,basis:z.enum(['asserted','measured','inferred']),authority:z.enum(['canonical','supporting','historical']).default('supporting'),locator:locator.optional(),observed_at:date.optional(),expires_at:date.optional(),references,source_refs:source_refs.optional(),replace_key:z.boolean().default(true)}],
   memory_project:['read','Bounded project record page, ambiguities and reference diagnostics.',{...page,max_bytes}],
   memory_create_node:['write','Create a workspace node without overwriting existing metadata.',{workspace,node,label:z.string().min(1).max(200),parent:node.optional()}],
   memory_link:['admin','Declare a graph edge; both workspaces must be authorized.',{workspace,target_workspace:workspace,source_id:id.optional(),target_id:id.optional(),relation:z.string().min(1).max(200)}],

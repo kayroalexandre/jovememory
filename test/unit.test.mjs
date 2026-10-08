@@ -1,9 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
-import { authenticate, authorize, hash, bounded, validateEndpoint, config } from '../src/config.mjs';
+import { authenticate, authorize, hash, bounded, validateEndpoint, config, WORKSPACE_PATTERN } from '../src/config.mjs';
 import { planIngestion } from '../src/ingest.mjs';
-import { fuse, isEligible } from '../src/service.mjs';
+import { fuse, isEligible, clampForRerank } from '../src/service.mjs';
+import zod from 'zod';
 import { Provider, readBounded, selectFreeModels } from '../src/provider.mjs';
 import { blockedPath, secretPatterns } from '../scripts/public-check.mjs';
 import { TOOLS } from '../src/schemas.mjs';
@@ -235,3 +236,125 @@ test('Native project key derivation is domain-separated, stable and rotates with
   assert.deepEqual(first.projectKey,config(env).projectKey);url.password=randomBytes(32).toString('hex');assert.notDeepEqual(first.projectKey,config({...env,DATABASE_URL:url.href}).projectKey);
   const explicit=randomBytes(32).toString('hex');assert.equal(config({...env,PROJECT_TOKEN_SECRET:explicit}).projectKey.toString('hex'),explicit);
 });
+
+test('The workspace naming contract is declared once and accepts current Git-style names',()=>{
+  for(const name of ['jovememory','Synthetic.App','jovememory-dev-2.0','my.repo_name','a'.repeat(100)]) assert.ok(WORKSPACE_PATTERN.test(name),name);
+  for(const name of ['','-leading','.dot','a'.repeat(101),'has space','sla/sh']) assert.ok(!WORKSPACE_PATTERN.test(name),name);
+  const workspace=zod.string().regex(WORKSPACE_PATTERN);
+  assert.ok(workspace.safeParse('Synthetic.App').success);
+  assert.ok(!workspace.safeParse('bad name').success);
+  const profile={id:'synthetic-writer',role:'writer',workspaces:['Synthetic.App'],sha256:hash('synthetic')};
+  assert.deepEqual(config({DATABASE_URL:'unused',AUTH_PROFILES:JSON.stringify([profile])}).profiles,[profile]);
+});
+
+test('Budget trimming re-anchors the page cursor so omitted rows stay reachable',()=>{
+  const row=i=>({id:`0000000${i}-0000-4000-8000-000000000000`,created_at:new Date(Date.UTC(2026,0,10-i)).toISOString(),content:'synthetic content '+'x'.repeat(2000)});
+  const reanchor=item=>`cursor-at-${item.id}`;
+  const page={next_cursor:'cursor-beyond-page'};
+  const trimmed=bounded({...page,checkpoints:[row(1),row(2),row(3)]},4096,reanchor);
+  assert.ok(trimmed.checkpoints.length<3);assert.ok(trimmed.omitted_ids.length>0);
+  assert.equal(trimmed.next_cursor,reanchor(trimmed.checkpoints.at(-1)));
+  assert.ok(!trimmed.omitted_ids.includes(trimmed.checkpoints.at(-1).id));
+  assert.ok(Buffer.byteLength(JSON.stringify(trimmed))<=4096);
+  // Trimming every row of a paginated response would strand them: that must be an actionable failure.
+  assert.throws(()=>bounded({records:[row(1)],next_cursor:'c'},600,reanchor),{code:'BUDGET'});
+  assert.throws(()=>bounded({workspace:'w',evidence:{notice:'x'.repeat(5000)}},600,reanchor),{code:'BUDGET'});
+  // A re-anchor callback must not fabricate a cursor for a result that was never paginated.
+  const unpaginated=bounded({checkpoints:[row(1),row(2)]},4096,reanchor);
+  assert.equal(unpaginated.next_cursor,undefined);
+  // Without pagination the declared-omission contract is preserved.
+  const declared=bounded({results:[row(1),row(2)]},600);
+  assert.equal(declared.results.length,0);assert.deepEqual(declared.omitted_ids,[row(1).id,row(2).id]);
+});
+
+test('Candidate payloads sent to models are clamped without mutating returned evidence',()=>{
+  const items=[{id:'a',content:'first '.repeat(5000)},{id:'b',content:'second '.repeat(5000)}];
+  const clamped=clampForRerank(items,2048);
+  assert.ok(clamped.every(x=>x.content_truncated===true&&x.content_bytes>Buffer.byteLength(x.content)));
+  assert.ok(clamped.every(x=>Buffer.byteLength(x.content)<=1024));
+  assert.deepEqual(clamped.map(x=>x.id),['a','b']);
+  assert.equal(items[0].content,'first '.repeat(5000));
+  assert.deepEqual(clampForRerank([{id:'c',content:'tiny'}],1048576),[{id:'c',content:'tiny'}]);
+});
+
+test('Database constraint violations surface as actionable faults instead of INTERNAL',async()=>{
+  const {declaredFault}=await import('../src/store.mjs');
+  const {Fault}=await import('../src/config.mjs');
+  assert.equal(declaredFault({code:'23505'}).code,'CONFLICT');
+  assert.equal(declaredFault({code:'23503'}).code,'REFERENCE');
+  assert.equal(declaredFault({code:'23514'}).code,'INPUT');
+  assert.equal(declaredFault({code:'40001'}).code,'CONFLICT');
+  const original=new Fault('STATE','original');
+  assert.equal(declaredFault(original),original);
+  const unknown=new Error('socket hang up');assert.equal(declaredFault(unknown),unknown);
+  // Infrastructure errors are not rewritten: only declared database constraints are mapped.
+  const connection={code:'ECONNREFUSED'};assert.equal(declaredFault(connection),connection);
+});
+
+test('Declared source locators reject absolute paths, traversal and control characters',()=>{
+  const record=TOOLS.memory_record.schema;
+  assert.ok(record.safeParse({workspace:'synthetic-a',kind:'goal',key:'k',title:'t',statement:'s',basis:'asserted',locator:'docs/ARCHITECTURE.md'}).success);
+  for(const locator of ['/etc/passwd','../outside.md','docs/../../secret.md','C:\\win.md','a\x00b','','a//b'])
+    assert.ok(!record.safeParse({workspace:'synthetic-a',kind:'goal',key:'k',title:'t',statement:'s',basis:'asserted',locator}).success,locator);
+});
+
+test('The connector detects working-tree change cheaply and only re-hashes when state moved',async()=>{
+  const {execFileSync}=await import('node:child_process');
+  const {mkdtemp,writeFile,mkdir,rm,rmdir}=await import('node:fs/promises');
+  const {tmpdir}=await import('node:os');
+  const {observeRepositoryState,observeRepository}=await import('../src/repository.mjs');
+  const root=await mkdtemp(tmpdir()+'/jovememory-state-');
+  const git=(...args)=>execFileSync('git',['-C',root,...args],{stdio:['ignore','pipe','ignore']});
+  try {
+    git('init');git('config','user.email','synthetic@example.invalid');git('config','user.name','Synthetic');
+    git('remote','add','origin','https://github.com/example/synthetic-state.git');
+    await writeFile(root+'/tracked.md','Synthetic tracked source.');
+    git('add','tracked.md');git('commit','-m','synthetic');
+    const {identifyRepository}=await import('../src/repository.mjs');
+    const project=await identifyRepository(root);
+    const before=await observeRepositoryState(root);
+    assert.equal(before,await observeRepositoryState(root));
+    // An untracked edit is invisible to the cheap check; the full observation still covers tracked files.
+    assert.equal((await observeRepository(project)).sources.length,1);
+    await writeFile(root+'/tracked.md','Synthetic tracked source, revised.');
+    const after=await observeRepositoryState(root);
+    assert.notEqual(after,before);
+    assert.equal((await observeRepository(project)).sources[0].sha256,hash('Synthetic tracked source, revised.'));
+    await git('commit','-am','synthetic');
+    const committed=await observeRepositoryState(root);
+    assert.notEqual(committed,after);
+    assert.equal(committed,await observeRepositoryState(root));
+  } finally {await rm(root,{recursive:true,force:true});}
+});
+
+test('The declared version, the package and the changelog cannot drift apart',async()=>{
+  const {changelogVersions,verifyVersion}=await import('../scripts/check.mjs');
+  const {VERSION}=await import('../src/config.mjs');
+  const pkg=JSON.parse(await (await import('node:fs/promises')).readFile('package.json','utf8'));
+  assert.equal(pkg.version,VERSION);
+  const changelog=await (await import('node:fs/promises')).readFile('CHANGELOG.md','utf8');
+  assert.deepEqual(changelogVersions(changelog)[0],VERSION);
+  assert.deepEqual(changelogVersions('## 1.2.3\ntext\n## 0.9.0\n'),['1.2.3','0.9.0']);
+  assert.deepEqual(changelogVersions('# Changelog\nno versions here\n'),[]);
+  // A changelog documenting a release the code does not declare is exactly the drift this gate prevents.
+  const {readFile,writeFile}=await import('node:fs/promises');
+  const original=await readFile('CHANGELOG.md','utf8');
+  try {
+    await writeFile('CHANGELOG.md','## 9.9.9 — future\n'+original);
+    await assert.rejects(verifyVersion(),{message:/documents 9\.9\.9/});
+    await writeFile('CHANGELOG.md','no headings at all\n');
+    await assert.rejects(verifyVersion(),{message:/no version headings/});
+  } finally {await writeFile('CHANGELOG.md',original);}
+  assert.equal((await verifyVersion()).version,VERSION);
+});
+
+test('Media MIME signatures are enforced and unsupported types are refused',()=>{
+  const png=Buffer.from([137,80,78,71,13,10,26,10,0,0]);
+  assert.ok(png.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10])));
+  assert.equal(Buffer.from('%PDF-1.7').subarray(0,5).toString(),'%PDF-');
+  const webp=Buffer.concat([Buffer.from('RIFF'),Buffer.alloc(4),Buffer.from('WEBP')]);
+  assert.ok(webp.subarray(0,4).toString()==='RIFF'&&webp.subarray(8,12).toString()==='WEBP');
+  const jpeg=Buffer.from([255,216,255,224]);
+  assert.ok(jpeg[0]===255&&jpeg[1]===216);
+});
+

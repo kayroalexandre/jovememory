@@ -1,6 +1,6 @@
 import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { randomUUID } from 'node:crypto';
-import { hash, ensure } from './config.mjs';
+import { hash, ensure, Fault } from './config.mjs';
 export class Media {
   constructor(config) { this.bucket=config?.bucket; this.client=config ? new S3Client({endpoint:config.endpoint,region:config.region,
     credentials:config.credentials,forcePathStyle:true,maxAttempts:1}):null; }
@@ -31,7 +31,11 @@ export class Media {
           ensure(size<=262144,'LIMIT','PDF text exceeds extraction limit.');pages.push(value);page.cleanup();
         }
         extractedText=pages.join('\n');extractionStatus=extractedText ? 'pdf_text':'pdf_no_text';
-      } catch {extractionStatus='pdf_extraction_unavailable';} finally {clearTimeout(deadline);await task.destroy();}
+      } catch(error) {
+        // A declared limit is not an extraction failure; only genuine parser errors degrade the status.
+        if(error instanceof Fault && error.code==='LIMIT') throw error;
+        extractionStatus='pdf_extraction_unavailable';
+      } finally {clearTimeout(deadline);await task.destroy();}
     }
     ensure(Buffer.byteLength(extractedText)<=262144,'LIMIT','Extracted media text exceeds 256 KiB.');
     const id=randomUUID(), objectKey=`${workspace}/${id}`;

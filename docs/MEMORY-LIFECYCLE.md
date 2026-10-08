@@ -46,7 +46,10 @@ de caminho são privados; nunca publicar a configuração resolvida.
 
 ## O que mudou e o que permanece válido
 
-1. O conector observa hashes de arquivos Git antes das chamadas e a cada minuto.
+1. O conector observa hashes de arquivos Git a cada minuto e antes de uma chamada quando o
+   estado do repositório mudou. A detecção de mudança usa o estado barato do Git (HEAD e
+   `status --porcelain`), sem reler o conteúdo dos arquivos; a re-hashagem completa só
+   acontece quando esse estado mudou de fato.
 2. Ao gravar fatos ligados a arquivos, o agente fornece `source_refs` com locator/hash
    corrente; o servidor compara à observação na transação.
 3. Fonte alterada/ausente sinaliza `needs_revalidation` em leitura/contexto/manutenção;
@@ -74,7 +77,10 @@ Não contabiliza chamadas diretas fora do serviço nem comprova economia de toke
 calibração ou taxa de regressão. Falha de métricas não reverte a escrita.
 
 O conector observa até 5000 arquivos por manifesto e 16 MiB por arquivo. Ignora
-symlinks e caminhos privados. Observação parcial não infere remoção de fontes
+symlinks e caminhos privados. Arquivos não versionados são omitidos da comparação de
+estado, de modo que uma alteração fora do índice Git só aparece quando passa a ser
+versionada; use `source_refs` para fatos que dependem de conteúdo fora do repositório.
+Observação parcial não infere remoção de fontes
 omitidas. Conteúdo de arquivo e histórico de chat não são importados automaticamente.
 O agente precisa registrar fatos e resultados; instruções MCP não garantem obediência
 de todo cliente/modelo. Quando o cliente fecha, a observação local para. Produção

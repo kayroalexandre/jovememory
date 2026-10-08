@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { mkdir, realpath, writeFile, readFile, chmod } from 'node:fs/promises';
 import { resolve, relative, isAbsolute, sep } from 'node:path';
 import pg from 'pg';
-import { hash, ensure } from '../src/config.mjs';
+import { hash, ensure, Fault } from '../src/config.mjs';
 import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
 export const tables=['workspaces','projects','sources','telemetry','nodes','items','links','media','audit','settings','schema_migrations'];
 export async function fingerprint(client) {
@@ -23,7 +23,13 @@ export function postgresEnv(url) {
 export async function pgCommand(command,args,url) {
   const child=spawn(command,args,{env:postgresEnv(url),stdio:['ignore','ignore','pipe']});
   child.stderr.resume();
-  const code=await new Promise((resolve,reject)=>{child.on('error',reject);child.on('exit',resolve);});
+  const code=await new Promise((resolve,reject)=>{
+    // A blocked lock must not hang the operation forever.
+    const timer=setTimeout(()=>{child.kill('SIGKILL');reject(new Fault('BACKUP','PostgreSQL backup/restore command timed out.'));},600000);
+    timer.unref();
+    child.on('error',error=>{clearTimeout(timer);reject(error);});
+    child.on('exit',value=>{clearTimeout(timer);resolve(value);});
+  });
   ensure(code===0,'BACKUP','PostgreSQL backup/restore command failed. Private diagnostics were withheld.');
 }
 export async function externalDirectory(path,{create=false}={}) {

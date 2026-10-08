@@ -1,9 +1,27 @@
 import pg from 'pg';
 import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
-import { ensure, hash } from './config.mjs';
+import { ensure, hash, Fault } from './config.mjs';
 const active = alias => `${alias}.status='active' AND (${alias}.valid_from IS NULL OR ${alias}.valid_from <= $2::timestamptz) AND (${alias}.valid_until IS NULL OR ${alias}.valid_until > $2::timestamptz)`;
 const clean = row => { if (!row) return null; const {embedding, search, page_time, ...result}=row; return result; };
+// Database constraints are user-visible conditions, not infrastructure faults; map them to actionable codes.
+const constraints = {
+  '23505': ['CONFLICT','This item already has a pending replacement or duplicate record; review the existing proposal or accept it first.'],
+  '23503': ['REFERENCE','The referenced node, workspace or item does not exist in this workspace.'],
+  '23514': ['INPUT','A stored value violates its declared constraint.'],
+  '40001': ['CONFLICT','A concurrent write won the race; retry with current state.'],
+  '40P01': ['CONFLICT','A concurrent writer held a lock; retry with current state.']
+};
+export function declaredFault(error) {
+  if (error instanceof Fault) return error;
+  const mapped=error && typeof error.code==='string' ? constraints[error.code] : null;
+  return mapped ? new Fault(mapped[0],mapped[1]) : error;
+}
+// Reproduce the exact `page_time` rendering used by the page query so a rebuilt cursor compares identically.
+function pageTime(value) {
+  const d=new Date(value), pad=(n,width=2)=>String(n).padStart(width,'0');
+  return `${d.getUTCFullYear()}-${pad(d.getUTCMonth()+1)}-${pad(d.getUTCDate())}T${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}.${pad(d.getUTCMilliseconds()*1000,6)}Z`;
+}
 export class Store {
   constructor(url) { this.pool = new pg.Pool({connectionString:url,max:8,connectionTimeoutMillis:5000,idleTimeoutMillis:30000,
     statement_timeout:10000,query_timeout:12000}); this.pool.on('error',()=>{}); }
@@ -29,7 +47,7 @@ export class Store {
       const exists=await client.query('SELECT name FROM workspaces WHERE name=$1',[workspace]);
       ensure(exists.rowCount,'WORKSPACE','Workspace has not been provisioned.');
       const result=await fn(client); await client.query('COMMIT'); return result;
-    } catch(error) { await client.query('ROLLBACK'); throw error; } finally {client.release();}
+    } catch(error) { await client.query('ROLLBACK'); throw declaredFault(error); } finally {client.release();}
   }
   async workspace(workspace,actor) {
     return this.transaction(workspace,async c=>{
@@ -68,7 +86,9 @@ export class Store {
       const incoming=new Map(entries.map(x=>[x.locator,x]));
       ensure(incoming.size===entries.length && entries.every(x=>x.present?Boolean(x.sha256):x.sha256===null),'INPUT','Source locators must be unique and presence must match the hash.');
       if(complete) for(const old of before) if(!incoming.has(old.locator)) incoming.set(old.locator,{locator:old.locator,sha256:null,present:false});
-      const changed=[...incoming.values()].filter(x=>{const old=before.find(y=>y.locator===x.locator);return !old || old.present!==x.present || old.sha256!==x.sha256;}).map(x=>x.locator);
+      // Index prior observations by locator; a linear scan per row is quadratic at 5000 sources.
+      const previous=new Map(before.map(x=>[x.locator,x]));
+      const changed=[...incoming.values()].filter(x=>{const old=previous.get(x.locator);return !old || old.present!==x.present || old.sha256!==x.sha256;}).map(x=>x.locator);
       await c.query(`INSERT INTO sources(workspace,locator,sha256,present,revision)
         SELECT $1,locator,sha256,present,$3 FROM jsonb_to_recordset($2::jsonb) AS x(locator text,sha256 text,present boolean)
         ON CONFLICT(workspace,locator) DO UPDATE SET sha256=EXCLUDED.sha256,present=EXCLUDED.present,revision=EXCLUDED.revision,observed_at=now()`,[workspace,JSON.stringify([...incoming.values()]),revision || null]);
@@ -145,14 +165,20 @@ export class Store {
   }
   async node(workspace, id, label, parent, actor) {
     return this.transaction(workspace,async c=>{
+      if(parent) await this.assertNode(c,workspace,parent);
       const r=await c.query('INSERT INTO nodes(workspace,id,label,parent) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING RETURNING *',[workspace,id,label,parent || null]);
       if(r.rowCount) await this.audit(c,workspace,'node',actor,null,{id,label,parent});
       return r.rows[0] || (await c.query('SELECT * FROM nodes WHERE workspace=$1 AND id=$2',[workspace,id])).rows[0];
     });
   }
+  async assertNode(c,workspace,node) {
+    const found=await c.query('SELECT 1 FROM nodes WHERE workspace=$1 AND id=$2',[workspace,node]);
+    ensure(found.rowCount,'NODE','The target node does not exist in this workspace; create it with memory_create_node first.');
+  }
   async create(c, workspace, input, actor, automatic=false) {
     if(input.source_refs) input={...input,metadata:{...input.metadata,source_refs:input.source_refs}};
     await this.validateSources(c,workspace,input.metadata?.source_refs);
+    if(input.node) await this.assertNode(c,workspace,input.node);
     const id=input.id || randomUUID(); const digest=hash(input.content);
     const existing=await c.query('SELECT id FROM items WHERE workspace=$1 AND (id=$2 OR (content_hash=$3 AND status=\'rejected\'))',[workspace,id,digest]);
     ensure(!existing.rowCount,'EXISTS','ID already exists or identical content was rejected.');
@@ -176,6 +202,21 @@ export class Store {
       return item;
     });
   }
+  // One transaction for a whole page; a per-item read loop saturates the pool on large workspaces.
+  async readMany(workspace,ids) {
+    if(!ids.length) return new Map();
+    const unique=[...new Set(ids)];
+    return this.transaction(workspace,async c=>{
+      const items=(await c.query('SELECT * FROM items WHERE workspace=$1 AND id=ANY($2::uuid[])',[workspace,unique])).rows.map(clean);
+      if(!items.length) return new Map();
+      const media=(await c.query('SELECT item_id,id,sha256,mime,size,extracted_text FROM media WHERE workspace=$1 AND item_id=ANY($2::uuid[]) ORDER BY id',[workspace,unique])).rows;
+      const links=(await c.query('SELECT source_id,id,target_workspace,target_id,relation FROM links WHERE workspace=$1 AND source_id=ANY($2::uuid[]) ORDER BY id',[workspace,unique])).rows;
+      const byId=new Map(items.map(x=>[x.id,{...x,media:[],links:[]}]));
+      for(const row of media) byId.get(row.item_id)?.media.push(row);
+      for(const row of links) byId.get(row.source_id)?.links.push({id:row.id,target_workspace:row.target_workspace,target_id:row.target_id,relation:row.relation});
+      return byId;
+    });
+  }
   async eligible(workspace,ids,asOf=new Date().toISOString(),client) {
     const fn=async c=>(await c.query(`SELECT * FROM items i WHERE workspace=$1 AND ${active('i')} AND id=ANY($3::uuid[]) ORDER BY id`,[workspace,asOf,ids])).rows.map(clean);
     return client ? fn(client) : this.transaction(workspace,fn);
@@ -184,6 +225,7 @@ export class Store {
     const scope=hash(JSON.stringify({workspace,status,kind:kind || null,node:node || null,as_of,include_ineligible}));
     let after=null;
     if(cursor) { try {after=JSON.parse(Buffer.from(cursor,'base64url'));} catch {} ensure(after?.scope===scope && typeof after.time==='string' && /^[a-f0-9-]{36}$/.test(after.id),'CURSOR','Cursor does not match these filters and as_of.'); }
+    const encode=(time,id)=>Buffer.from(JSON.stringify({scope,time,id})).toString('base64url');
     return this.transaction(workspace,async c=>{
       const args=[workspace,as_of,status,kind || null,node || null,after?.time || null,after?.id || null,limit+1,include_ineligible];
       const r=await c.query(`SELECT *,to_char(created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS page_time FROM items i
@@ -191,7 +233,10 @@ export class Store {
         AND ($9::boolean OR $3!='active' OR (${active('i')})) AND ($6::timestamptz IS NULL OR (created_at,id)<($6::timestamptz,$7::uuid))
         ORDER BY created_at DESC,id DESC LIMIT $8`,args);
       const rows=r.rows.slice(0,limit), last=rows.at(-1);
-      return {items:rows.map(clean),as_of,next_cursor:r.rows.length>limit ? Buffer.from(JSON.stringify({scope,time:last.page_time,id:last.id})).toString('base64url'):null};
+      const page={items:rows.map(clean),as_of,next_cursor:r.rows.length>limit ? encode(last.page_time,last.id) : null};
+      // Non-enumerable: the cursor builder is internal and must not reach a serialized tool result.
+      Object.defineProperty(page,'cursorAt',{value:row=>encode(pageTime(row.created_at),row.id),enumerable:false});
+      return page;
     });
   }
   async review(workspace,id,accept,reason,actor) {
@@ -220,6 +265,7 @@ export class Store {
       ensure(old?.status==='active','STATE','Only active items can be replaced.');
       const metadata={...old.metadata};delete metadata.model_analysis;
       Object.assign(metadata,input.metadata || {});
+      // Only explicitly supplied keys replace predecessor values; an omitted window keeps the original validity.
       const proposal=await this.create(c,workspace,{...old,...input,metadata,id:undefined,supersedes:id},actor,automatic);
       await this.audit(c,workspace,'replacement',actor,proposal.id,{reason,predecessor:id});return proposal;
     });
@@ -231,6 +277,7 @@ export class Store {
       if(operation==='delete') await c.query("UPDATE items SET status='deleted',reason=$3 WHERE workspace=$1 AND id=$2",[workspace,id,payload.reason]);
       if(operation==='retire') {ensure(old.status==='active','STATE','Only active memories can retire.');await c.query("UPDATE items SET status='invalidated',reason=$3 WHERE workspace=$1 AND id=$2",[workspace,id,payload.reason]);}
       if(operation==='move') { ensure(['active','invalidated'].includes(old.status),'STATE','Only reviewed items can move.');
+        await this.assertNode(c,workspace,payload.node);
         await c.query('UPDATE items SET node=$3 WHERE workspace=$1 AND id=$2',[workspace,id,payload.node]); }
       if(operation==='feedback') { ensure(old.status==='active','STATE','Feedback requires an active item.');
         await c.query('UPDATE items SET importance=greatest(0,least(1,importance+$3)) WHERE workspace=$1 AND id=$2',[workspace,id,payload.useful?0.05:-0.05]); }
@@ -243,18 +290,21 @@ export class Store {
     counts:(await c.query('SELECT status,count(*)::int AS count FROM items WHERE workspace=$1 GROUP BY status',[workspace])).rows,
     embeddings:(await c.query("SELECT count(*) FILTER (WHERE embedding IS NOT NULL)::int AS indexed,count(*)::int AS active FROM items WHERE workspace=$1 AND status='active'",[workspace])).rows[0]
   })); }
-  async mutations(workspace,{id,operation,limit=20,after=0}={}) { return this.transaction(workspace,async c=>(await c.query(`SELECT * FROM audit
-    WHERE workspace=$1 AND sequence>$2 AND ($3::uuid IS NULL OR item_id=$3) AND ($4::text IS NULL OR operation=$4) ORDER BY sequence LIMIT $5`,[workspace,after,id || null,operation || null,limit])).rows); }
+  async mutations(workspace,{id,operation,limit=20,after=0}={}) { return this.transaction(workspace,async c=>{
+    // Audit rows store full item snapshots for replay; reading them back would return unbounded content.
+    const rows=(await c.query(`SELECT sequence,operation,item_id,actor,created_at,payload - 'item' - 'before' AS payload
+      FROM audit WHERE workspace=$1 AND sequence>$2 AND ($3::uuid IS NULL OR item_id=$3)
+      AND ($4::text IS NULL OR operation=$4) ORDER BY sequence LIMIT $5`,[workspace,after,id || null,operation || null,limit])).rows;
+    return rows;
+  }); }
   async lexical(workspace,query,limit,asOf) { return this.transaction(workspace,async c=>(await c.query(`SELECT i.*,ts_rank_cd(search,websearch_to_tsquery('portuguese',$3)) AS score
     FROM items i WHERE workspace=$1 AND ${active('i')} AND search @@ websearch_to_tsquery('portuguese',$3) ORDER BY score DESC,id LIMIT $4`,[workspace,asOf,query,limit])).rows.map(clean)); }
   async semantic(workspace,embedding,model,limit,asOf) { return this.transaction(workspace,async c=>(await c.query(`SELECT i.*,1-(embedding <=> $3::vector) AS score
     FROM items i WHERE workspace=$1 AND ${active('i')} AND embedding IS NOT NULL AND embedding_model=$4 AND vector_dims(embedding)=$5
     ORDER BY embedding <=> $3::vector,id LIMIT $6`,[workspace,asOf,JSON.stringify(embedding),model,embedding.length,limit])).rows.map(clean)); }
-  async recent(workspace,limit,asOf) { return this.transaction(workspace,async c=>(await c.query(`SELECT * FROM items i WHERE workspace=$1 AND ${active('i')}
-    ORDER BY created_at DESC,id LIMIT $3`,[workspace,asOf,limit])).rows.map(clean)); }
-  async graph(workspace,ids,limit,asOf) { if(!ids.length) return []; return this.transaction(workspace,async c=>(await c.query(`SELECT DISTINCT i.* FROM items i
+  async graph(workspace,ids,limit,asOf) { if(!ids.length) return []; return this.transaction(workspace,async c=>(await c.query(`SELECT DISTINCT ON (i.id) i.* FROM items i
     JOIN links l ON l.workspace=i.workspace AND l.target_workspace=i.workspace AND l.target_id=i.id
-    WHERE i.workspace=$1 AND ${active('i')} AND l.source_id=ANY($3::uuid[]) LIMIT $4`,[workspace,asOf,ids,limit])).rows.map(clean)); }
+    WHERE i.workspace=$1 AND ${active('i')} AND l.source_id=ANY($3::uuid[]) ORDER BY i.id LIMIT $4`,[workspace,asOf,ids,limit])).rows.map(clean)); }
   async embed(workspace,id,vector,model,contentHash,actor) { return this.transaction(workspace,async c=>{
     const r=await c.query("UPDATE items SET embedding=$3::vector,embedding_model=$4 WHERE workspace=$1 AND id=$2 AND content_hash=$5 AND status='active' RETURNING id",[workspace,id,JSON.stringify(vector),model,contentHash]);
     ensure(r.rowCount,'CONFLICT','Item changed while generating its embedding.'); await this.audit(c,workspace,'embed',actor,id,{model,dimensions:vector.length});return {id};
@@ -273,7 +323,8 @@ export class Store {
         const prior=await c.query("SELECT id,status FROM items WHERE workspace=$1 AND (id=$2 OR (content_hash=$3 AND status='rejected'))",[workspace,part.id,hash(part.content)]);
         if(prior.rowCount) {results.push({...prior.rows[0],skipped:true});continue;}
         await c.query('INSERT INTO nodes(workspace,id,label) VALUES($1,$2,$2) ON CONFLICT DO NOTHING',[workspace,part.source]);
-        results.push(await this.create(c,workspace,{...part,node:part.source,metadata:{source:part.source,plan_hash:plan.plan_hash}},actor,automatic));
+        // Persist the heading committed to the deterministic id and shown in the preview.
+        results.push(await this.create(c,workspace,{...part,node:part.source,metadata:{source:part.source,heading:part.heading,plan_hash:plan.plan_hash}},actor,automatic));
       }
       return {complete:true,results};
     });
@@ -299,7 +350,8 @@ export class Store {
   }); }
   async mediaSearch(workspace,query,limit,asOf,embedding,model) { return this.transaction(workspace,async c=>{
     const r=await c.query(`SELECT m.id,m.item_id,m.sha256,m.mime,m.extracted_text FROM media m JOIN items i ON i.workspace=m.workspace AND i.id=m.item_id
-      WHERE m.workspace=$1 AND ${active('i')} AND to_tsvector('portuguese',m.extracted_text) @@ websearch_to_tsquery('portuguese',$3) LIMIT $4`,[workspace,asOf,query,limit]);
+      WHERE m.workspace=$1 AND ${active('i')} AND to_tsvector('portuguese',m.extracted_text) @@ websearch_to_tsquery('portuguese',$3)
+      ORDER BY m.id LIMIT $4`,[workspace,asOf,query,limit]);
     if(r.rowCount || !embedding) return {results:r.rows,arm:'lexical'};
     const vector=await c.query(`SELECT m.id,m.item_id,m.sha256,m.mime,m.extracted_text,1-(m.embedding <=> $3::vector) AS score FROM media m JOIN items i ON i.workspace=m.workspace AND i.id=m.item_id
       WHERE m.workspace=$1 AND ${active('i')} AND m.embedding_model=$4 AND vector_dims(m.embedding)=$5 ORDER BY m.embedding <=> $3::vector LIMIT $6`,[workspace,asOf,JSON.stringify(embedding),model,embedding.length,limit]);
