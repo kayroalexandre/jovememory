@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { createHash, createHmac, hkdfSync, timingSafeEqual } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-export const VERSION = '0.5.2';
+export const VERSION = '0.5.3';
 export const FREE_INFERENCE_PREFERENCES = ['nvidia/nemotron-3-ultra-550b-a55b:free','nvidia/nemotron-3-super-120b-a12b:free','google/gemma-4-31b-it:free'];
 export const INFERENCE_FALLBACK_MODELS = ['deepseek/deepseek-v4-pro','deepseek/deepseek-v4-flash','xiaomi/mimo-v2.5'];
 export const hash = value => createHash('sha256').update(value).digest('hex');
@@ -18,7 +18,10 @@ export function runtimeDatabaseUrl(adminUrl, explicitPassword) {
   const url=new URL(adminUrl);
   ensure(['postgres:','postgresql:'].includes(url.protocol) && url.password,'CONFIG','Administrative database URL must contain its private bootstrap credential.');
   if(explicitPassword) ensure(/^[a-f0-9]{64}$/.test(explicitPassword),'CONFIG','Runtime bootstrap password must be a generated 256-bit hex value.');
-  const password=explicitPassword || createHmac('sha256',decodeURIComponent(url.password)).update('jovememory-runtime-v1/'+url.hostname+url.pathname).digest('hex');
+  // The runtime role is cluster-wide, so the derivation must be stable across every database of
+  // the same server. Including the database name here once rotated the shared password whenever
+  // a scratch database was bootstrapped, locking out the main development database.
+  const password=explicitPassword || createHmac('sha256',decodeURIComponent(url.password)).update('jovememory-runtime-v1/'+url.hostname).digest('hex');
   url.username='jovememory_app';url.password=password;return url;
 }
 function providerKey(env) {

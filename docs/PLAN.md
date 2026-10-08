@@ -10,15 +10,14 @@ com a instância de produção no Railway, não com este checkout — a topologi
 em "Topologia de desenvolvimento versus produção". O fluxo pretendido é: alterar e
 validar aqui, commit, PR, `main`, deploy, e só então smoke privado.
 
-Branch `main`, versão declarada **0.5.2**, **publicada e implantada em produção em
-2026-10-08**. Deployment `d88bdccb` observado até `SUCCESS`; smoke completo executado
-contra produção.
+Branch `main`, versão declarada **0.5.3**, com 0.5.2 publicada e implantada em produção em
+2026-10-08 (deployment `d88bdccb`, observado até `SUCCESS`, smoke completo executado).
 
 | Gate | Resultado |
 | --- | --- |
 | `npm run lint` (sintaxe, coerência de versão, Railway IaC) | passa |
 | `npm run secret-scan` | passa |
-| `npm test` | 32 testes, 32 passam |
+| `npm test` | 33 testes, 33 passam |
 | `npm run test:integration` | 28 resultados TAP, 27 cenários, todos passam |
 | Cobertura de ferramentas MCP | 43/43 exercitadas com autorização e persistência reais |
 | `npm audit --omit=dev` | 0 vulnerabilidades |
@@ -262,24 +261,56 @@ Consequências: o procedimento real de deploy está documentado em `OPERATIONS.m
 de deployment não é prova de conteúdo (confirme por `memory_version`), e o deploy
 automático exige autorizar o GitHub App no dashboard — ação do operador, não de API.
 
+## Decisão de arquitetura — memória de desenvolvimento (2026-10-08)
+
+Estudado e decidido após investigação; registrado como decisão no próprio corpus
+(`memory_record` com chave `dev-memory-strategy`).
+
+**Uma memória durável por repositório, em produção.** O buraco como originalmente
+formulado era em grande parte um erro de categoria: memória não é uma web app, e tráfego
+de desenvolvimento em memória de produção é dogfooding — foi assim que o N+1 foi
+percebido. Decomposto o problema: conhecimento durável e fatos sobre código não implantado
+pertencem a produção (os segundos pela maquinaria de `source_refs` + estado de deploy, já
+provada); a validação do servidor é a suite de integração, mais rigorosa que um corpus de
+teste; e o buraco real era **contaminação por experimentos**, que se resolve com
+disciplina de workspace descartável via CLI — sem novo namespace de servidor.
+
+As três opções antes listadas aqui foram analisadas e rejeitadas com o raciocínio
+registrado no corpus. A alternativa mais forte — override por projeto no cliente,
+mesmo nome `jovememory` apontando para o broker local — fica como caminho de crescimento,
+rejeitada hoje por custar disponibilidade (`npm start` manual), mover conhecimento durável
+para a casa menos durável, congelar o workspace de produção para outras máquinas e matar o
+dogfooding. Se projetos clientes multiplicarem, o caminho é um ambiente de staging na
+Railway.
+
+A armadilha que tornava o fluxo local perigoso foi corrigida em 0.5.3: a derivação da
+senha da role não inclui mais o nome do banco, porque o `ALTER ROLE` é do cluster inteiro
+e bootstrapear um banco de teste travava o banco principal.
+
 ## O que fazer em seguida
 
-1. **Decidir sobre o deploy automático.** Autorizar o GitHub App da Railway sobre o
+1. **Backup de produção — agora crítico, não manutenção.** A decisão de manter toda a
+   memória durável em produção faz da produção o ponto único de falha do ativo mais
+   valioso do projeto: os registros e checkpoints que documentam toda a remediação.
+   Habilite backup nativo do Railway no serviço PostgreSQL conforme a retenção exigida;
+   `npm run backup` cobre snapshots manuais, mas exige credenciais administrativas locais
+   e não substitui política automática. Sem backup, a decisão de arquitetura fica
+   incompleta.
+2. **Decidir sobre o deploy automático.** Autorizar o GitHub App da Railway sobre o
    repositório e criar o gatilho com `checkSuites`, para que merge em `main` só deploye
    depois dos checks obrigatórios. É ação de dashboard; sem ela, todo deploy é manual.
-2. **Escolher a estratégia de memória local** entre as três opções acima, e executá-la
-   antes do próximo ciclo de correções, para que validação em memória deixe de recair
-   sobre produção.
-3. **Definir e verificar política de backup nativo do Railway** conforme a retenção
-   exigida. Hoje não há configuração nem verificação.
-4. **Medir o limite de 3 candidatos gratuitos** contra o catálogo real antes de assumi-lo
+3. **Medir o limite de 3 candidatos gratuitos** contra o catálogo real antes de assumi-lo
    como adequado.
-5. **Revisar `importance` e `authority`** com labels reais antes de dar qualquer efeito de
+4. **Revisar `importance` e `authority`** com labels reais antes de dar qualquer efeito de
    ordenação a eles.
-6. **Adicionar teste de integração de anexo de imagem** (PNG/JPEG/WebP). As verificações de
+5. **Adicionar teste de integração de anexo de imagem** (PNG/JPEG/WebP). As verificações de
    assinatura existem em `src/media.mjs` e estão cobertas por teste unitário das
    assinaturas, mas o caminho completo de anexo com imagem não é exercitado na integração.
-7. **Exercitar `pdf_extraction_unavailable`** com um PDF que o parser não consiga ler.
+6. **Exercitar `pdf_extraction_unavailable`** com um PDF que o parser não consiga ler.
+7. **Remover o resíduo de contaminação:** o nó `mvr-refeicoes`, de um projeto cliente, existe
+   dentro do workspace do próprio jovememory com 0 itens, herança de uso descuidado
+   anterior. Não há ferramenta de remoção de nó — quando ela existir, limpe; SQL
+   administrativo contra produção não é o caminho.
 8. **Acompanhar a depreciação de `tsx`** ou substituir o `check-railway` por execução via
    SDK já empacotado, se a CLI deixar de exigir o loader.
 9. **Revisar `railway config plan`** quando houver CLI disponível para assumir

@@ -15,6 +15,35 @@ separação estão em [PLAN.md](PLAN.md).
 
 `local:init` gera credenciais. `migrate` exige `MIGRATION_DATABASE_URL`. `cli -- setup-local` habilita a role runtime com senha própria e cria apenas o bucket local declarado. `cli -- workspace <nome>` provisiona um workspace explícito. `npm start` verifica schema e abre HTTP; `npm run mcp` abre stdio com `STDIO_PROFILE` configurado.
 
+### Workspace descartável para experimentos
+
+Sondas, smoke e avaliação **nunca** vão para o workspace do projeto. O corpus do workspace
+é conhecimento durável; misturar experimentos obriga a aposentar item por item depois, e
+uma vez um nó de projeto cliente acabou dentro do workspace do próprio jovememory por uso
+descuidado. Experimentos usam um workspace descartável no Compose local:
+
+```sh
+npm run local:up
+npm run cli -- workspace scratch
+printf '{"workspace":"scratch","content":"probe"}' | npm run cli -- call memory_write local-admin
+printf '{"workspace":"scratch","query":"probe"}' | npm run cli -- call memory_search local-reader
+```
+
+O volume local é descartável: `docker compose down` conserva, `--volumes` apaga tudo. Não
+há custo em deixar o workspace `scratch` sujo. Para validação automatizada, prefira a
+suite de integração — ela cria bancos próprios e cobre os 43 contratos com mais rigor do
+que um corpus persistente de teste.
+
+O servidor local também serve para validar o servidor em uso interativo
+(`npm start` na 3007). Desde 0.5.3, bootstrapear um banco de teste no mesmo cluster não
+trava o banco principal.
+
+**Decisão de arquitetura (2026-10-08):** uma memória durável por repositório, em produção.
+Não divida a memória de um repositório por ambiente: o valor é continuidade, e a casa
+local é a menos durável. Código não implantado é declarado no registro com estado de
+deploy, que a maquinaria de ciclo de vida já cobre. Se o número de projetos clientes
+crescer, o caminho é um ambiente de staging na Railway, não memória local.
+
 A chave local fica fora do checkout, em `~/.config/jovememory/secrets/openrouter.key` (diretório 700, arquivo 600). O `.env` guarda apenas o caminho absoluto em `PROVIDER_API_KEY_FILE`. Para cadastrá-la sem exibição ou histórico:
 
 ```sh
@@ -115,7 +144,7 @@ Configure pelo Railway:
 
 Após migration, provisionar a role runtime com LOGIN e senha própria pela conexão administrativa. Não usar a senha do owner para a role runtime. Não expor SQL com segredo em histórico de shell/chat. `setup-local` é restrito ao ambiente local e não opera Railway.
 
-No primeiro provisionamento, deixar `DATABASE_URL` ausente ativa bootstrap: migration e runtime derivam uma senha exclusiva por HMAC-SHA256 da credencial administrativa nativa e da identidade do banco, sem escrever ou imprimir o segredo. `APP_DATABASE_PASSWORD` opcional pode substituir por uma senha aleatória independente de 64 caracteres hex. A URL de runtime usa a role `jovememory_app`; healthcheck recusa conexão superuser/BYPASSRLS. Esse modo simplifica o primeiro deploy; a aplicação ainda recebe a variável administrativa necessária ao pre-deploy. Para isolamento de privilégios completo, use um serviço administrativo separado para migrations e deixe só `DATABASE_URL` runtime no serviço público.
+No primeiro provisionamento, deixar `DATABASE_URL` ausente ativa bootstrap: migration e runtime derivam uma senha exclusiva por HMAC-SHA256 da credencial administrativa nativa e da identidade do **servidor**, sem escrever ou imprimir o segredo. A role é do cluster inteiro, e a derivação não inclui o nome do banco: bootstrapear um banco de teste no mesmo servidor não pode rotacionar a senha compartilhada e travar os demais. `APP_DATABASE_PASSWORD` opcional pode substituir por uma senha aleatória independente de 64 caracteres hex. A URL de runtime usa a role `jovememory_app`; healthcheck recusa conexão superuser/BYPASSRLS. Esse modo simplifica o primeiro deploy; a aplicação ainda recebe a variável administrativa necessária ao pre-deploy. Para isolamento de privilégios completo, use um serviço administrativo separado para migrations e deixe só `DATABASE_URL` runtime no serviço público.
 
 Provisionar o primeiro workspace requer uma operação administrativa explícita. No primeiro deploy, pode-se executar um único pre-deploy `npm run migrate && npm run cli -- workspace <nome-autorizado>` na configuração privada do serviço. Depois de observar sucesso, restaurar o pre-deploy para `npm run migrate`. O comando é idempotente e não cria conteúdo. Não mantenha nomes de workspaces pessoais em configuração pública. Redeploy de um build existente pode conservar o snapshot anterior de configurações: após mudanças, confirme os comandos nos logs de um deploy novo pela fonte GitHub.
 
