@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.5.3 — 2026-10-08
+
+Correção da armadilha de bootstrap e decisão de arquitetura sobre memória de
+desenvolvimento.
+
+- `runtimeDatabaseUrl` derivava a senha da role runtime de hostname mais **pathname** (o
+  nome do banco), mas o `ALTER ROLE` é do **cluster inteiro**. Bootstrapear um banco de
+  teste rotacionava a senha compartilhada e bloqueava o banco principal de
+  desenvolvimento — descoberto empiricamente, não por leitura. A derivação passa a usar
+  apenas o hostname: estável em todos os bancos do mesmo servidor, distinta entre
+  servidores. Teste novo cobre bancos de teste e de restore no mesmo cluster.
+- **Migração da senha:** no próximo deploy, o pre-deploy bootstrap grava a senha derivada
+  da fórmula nova. Runtime e bootstrap usam a mesma fórmula e a mesma variável, então o
+  deploy é consistente; a janela de drenagem de 20 segundos pode recusar novas conexões do
+  processo antigo, como em qualquer rotação de credencial.
+- Documentada a decisão de arquitetura: **uma memória durável por repositório, em
+  produção**; experimentos em workspace descartável via CLI, nunca no workspace do
+  projeto. Memória não é uma web app — dividir a memória de um repositório por ambiente
+  destrói a continuidade que ela existe para preservar e mandaria o conhecimento mais
+  valioso para a casa menos durável. O override por projeto no cliente (mesmo nome,
+  endpoint local) fica registrado como caminho de crescimento, rejeitado hoje por custar
+  disponibilidade, durabilidade e dogfooding.
+- `OPERATIONS.md` ganha o procedimento de workspace descartável e o smoke mínimo
+  pós-deploy executável.
+- Registrado resíduo conhecido: um nó de projeto cliente dentro do workspace do próprio
+  jovememory, vazio, herança de uso descuidado anterior. Não há ferramenta de remoção de
+  nó; fica documentado em vez de SQL administrativo contra produção.
+
 ## 0.5.2 — 2026-10-07
 
 O observatório deixa de ser um servidor MCP separado e passa a ser servido pelo próprio

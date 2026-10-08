@@ -136,7 +136,18 @@ test('Runtime bootstrap derives a role-specific credential without reusing or di
   const admin=new URL('postgresql://127.0.0.1:5432/example');admin.username='owner';admin.password=randomBytes(32).toString('hex');
   const runtime=runtimeDatabaseUrl(admin.href);assert.equal(runtime.username,'jovememory_app');assert.notEqual(runtime.password,admin.password);
   assert.equal(runtime.password.length,64);assert.equal(runtime.href,runtimeDatabaseUrl(admin.href).href);
-  admin.pathname='/another';assert.notEqual(runtime.password,runtimeDatabaseUrl(admin.href).password);
+});
+
+test('Bootstrapping one database cannot lock out the others of the same cluster',async()=>{
+  const {runtimeDatabaseUrl}=await import('../src/config.mjs');
+  const admin=new URL('postgresql://127.0.0.1:5432/main');admin.username='owner';admin.password=randomBytes(32).toString('hex');
+  const main=runtimeDatabaseUrl(admin.href).password;
+  // The ALTER ROLE is cluster-wide: a scratch database bootstrapped on the same server must
+  // derive the identical password, or the main database stops authenticating.
+  for(const name of ['/scratch','/jovememory_restore_probe','/another'])
+    {admin.pathname=name;assert.equal(runtimeDatabaseUrl(admin.href).password,main,`Password drifted for ${name}.`);}
+  const other=new URL(admin.href);other.hostname='elsewhere';other.pathname='/main';
+  assert.notEqual(runtimeDatabaseUrl(other.href).password,main,'A different server must derive a different password.');
 });
 
 
