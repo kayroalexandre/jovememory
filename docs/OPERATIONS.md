@@ -100,7 +100,11 @@ Duas consequências desse caminho que valem registrar:
 Para que merge em `main` passe a deployar automaticamente, autorize o GitHub App da Railway
 sobre o repositório no dashboard e então crie um gatilho com `checkSuites`, para que o deploy
 só ocorra depois dos checks obrigatórios (`verify`, `secrets`). É uma ação de dashboard, não
-de API, e fica a critério do operador.
+de API, e fica a critério do operador. **Verificado em 2026-10-08:** nem a API do GitHub (o
+token do CLI não gerencia instalações de apps) nem a API da Railway permitem conceder esse
+acesso programaticamente — o passo é, no GitHub, *Settings → Applications → Railway →
+Configure* → conceder acesso a `kayroalexandre/jovememory`. Depois disso, o gatilho pode ser
+criado por `deploymentTriggerCreate` com `branch: main` e `checkSuites: true`.
 
 O projeto Railway deve ser privado, embora o repositório de código seja público. Desative ambientes automáticos de PR no primeiro provisionamento; código de PR público não recebe credenciais de produção. Use serviços/dados/variáveis separados para homologação.
 
@@ -176,6 +180,53 @@ versão relatada pelo próprio serviço.
 Fontes: [Railway Infrastructure as Code](https://docs.railway.com/infrastructure-as-code), [pgvector](https://docs.railway.com/guides/rag-pipeline-pgvector), [Bucket e referências](https://docs.railway.com/storage-buckets), [isolamento por ambiente](https://docs.railway.com/guides/isolate-staging-production).
 
 ## Backup e verificação
+
+### Por que o backup nativo de PITR não se aplica a esta instalação — verificado em 2026-10-08
+
+O PITR da Railway roda nas imagens de banco dela (`ghcr.io/railwayapp-templates/postgres-ssl`,
+`postgres-ha/postgres-patroni`). O PostgreSQL desta instalação usa a imagem pgvector fixada
+por digest, que **não é uma das imagens suportadas** — o `railway postgres pitr status` lista
+isso como bloqueador. Trocar de imagem para habilitar PITR removeria a extensão `vector` e
+regrediria a busca semântica, que é o recurso central. Portanto **o backup desta instalação é
+o snapshot do próprio projeto** (`npm run backup`), com restore verificado por fingerprint.
+
+### Procedimento de backup de produção — executado e verificado
+
+Produção não expõe proxy TCP público (correto), então o acesso ao banco é por túnel SSH
+temporário. Credenciais ficam só em memória do processo; nada vai para disco, comando ou
+saída:
+
+```sh
+# 1. Túnel temporário (gera uma chave, registra, abre o túnel)
+ssh-keygen -t ed25519 -f ~/.ssh/jovememory_backup -N "" -C jovememory-backup-temp
+railway ssh keys add -k ~/.ssh/jovememory_backup.pub -n jovememory-backup-temp
+railway ssh config --service <pgvector> --alias jovememory-db --identity-file ~/.ssh/jovememory_backup
+ssh jovememory-db -N -L 127.0.0.1:15432:127.0.0.1:5432 &
+
+# 2. Backup: URL privada com host trocado para 127.0.0.1:15432, S3 da produção,
+#    destino FORA do repositório
+npm run backup -- /home/kayro/backups/jovememory-production/<data>
+
+# 3. Verificacao do restore em banco descartavel local (crie-o vazio antes)
+npm run backup:verify -- <pasta-do-backup>
+
+# 4. Remocao do acesso permanente — SEMPRE
+railway ssh keys remove jovememory-backup-temp
+railway ssh config remove --service <pgvector>
+kill %1  # fecha o tunel
+```
+
+Verificado em 2026-10-08: snapshot com 11 tabelas e 1 objeto de mídia, restaurado em banco
+descartável com `database_fingerprints: matched` e `media_hashes: matched`. Um backup só é
+backup depois de restaurado e comparado.
+
+**Política:** execute antes e depois de mudanças de contrato ou de schema, e periodicamente
+conforme a retenção exigida. A decisão de arquitetura de manter toda a memória durável em
+produção faz da produção o ponto único de falha do ativo mais valiente do projeto — o
+corpus é a história inteira dele. O bucket de mídia **não é repopulado** pela verificação;
+recuperação operacional de mídia é procedimento separado, abaixo.
+
+### Backup com as próprias ferramentas do projeto
 
 Execute `npm run backup -- /caminho/privado/fora-do-repositorio/backup-novo` com configuração administrativa e S3 da instalação. Precisa de `pg_dump` compatível com a versão do servidor. O snapshot repeatable-read é exportado para o dump; fingerprints e ponteiros de mídia pertencem ao mesmo snapshot. Objetos têm chaves imutáveis; mídia é copiada e validada por tamanho/SHA-256. Manifest guarda fingerprints por tabela e hash do dump; não guarda credenciais. O diretório não pode resolver dentro deste repositório, nem por symlink.
 

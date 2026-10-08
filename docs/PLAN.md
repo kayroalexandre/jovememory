@@ -289,31 +289,34 @@ e bootstrapear um banco de teste travava o banco principal.
 
 ## O que fazer em seguida
 
-1. **Backup de produção — agora crítico, não manutenção.** A decisão de manter toda a
-   memória durável em produção faz da produção o ponto único de falha do ativo mais
-   valioso do projeto: os registros e checkpoints que documentam toda a remediação.
-   Habilite backup nativo do Railway no serviço PostgreSQL conforme a retenção exigida;
-   `npm run backup` cobre snapshots manuais, mas exige credenciais administrativas locais
-   e não substitui política automática. Sem backup, a decisão de arquitetura fica
-   incompleta.
+1. **Backup de produção — resolvido em 2026-10-08.** PITR nativo é inviável com a imagem
+   pgvector (bloqueador verificado; trocar de imagem regrediria a busca semântica). A
+   política é o snapshot do próprio projeto: primeiro backup de produção executado por
+   túnel SSH temporário, com restore verificado por fingerprint em banco descartável
+   (`database_fingerprints: matched`, `media_hashes: matched`), e nenhum acesso permanente
+   deixado para trás. O procedimento completo, com a remoção obrigatória da chave, está em
+   `OPERATIONS.md`. Repita antes/depois de mudanças de contrato e periodicamente.
 2. **Decidir sobre o deploy automático.** Autorizar o GitHub App da Railway sobre o
-   repositório e criar o gatilho com `checkSuites`, para que merge em `main` só deploye
-   depois dos checks obrigatórios. É ação de dashboard; sem ela, todo deploy é manual.
-3. **Medir o limite de 3 candidatos gratuitos** contra o catálogo real antes de assumi-lo
-   como adequado.
+   repositório (dashboard do GitHub — *Settings → Applications → Railway → Configure*) e
+   então criar o gatilho com `checkSuites`. **Verificado:** nem a API do GitHub nem a da
+   Railway permitem esse passo programaticamente; sem ele, todo deploy é manual pelo
+   procedimento em `OPERATIONS.md`.
+3. ~~Medir o limite de 3 candidatos gratuitos~~ **Medido em 2026-10-08:** com o catálogo
+   vivo (469 modelos), exatamente 3 candidatos passam no filtro — e são as 3 preferências
+   configuradas, todas presentes. O limite não exclui nada hoje; passa a truncar só se o
+   catálogo ganhar mais modelos de texto gratuitos além das preferências.
 4. **Revisar `importance` e `authority`** com labels reais antes de dar qualquer efeito de
-   ordenação a eles.
-5. **Adicionar teste de integração de anexo de imagem** (PNG/JPEG/WebP). As verificações de
-   assinatura existem em `src/media.mjs` e estão cobertas por teste unitário das
-   assinaturas, mas o caminho completo de anexo com imagem não é exercitado na integração.
-6. **Exercitar `pdf_extraction_unavailable`** com um PDF que o parser não consiga ler.
-7. **Remover o resíduo de contaminação:** o nó `mvr-refeicoes`, de um projeto cliente, existe
+   ordenação a eles. Continua sem medição possível: não há corpus nem labels reais.
+5. ~~Teste de anexo de imagem e de `pdf_extraction_unavailable`~~ **Cobertos:** PNG real
+   (1x1 válido), assinatura WebP, recusa de MIME contraditório e PDF quebrado que preserva
+   os bytes e declara `pdf_extraction_unavailable` — tudo exercitado na integração.
+6. **Remover o resíduo de contaminação:** o nó `mvr-refeicoes`, de um projeto cliente, existe
    dentro do workspace do próprio jovememory com 0 itens, herança de uso descuidado
    anterior. Não há ferramenta de remoção de nó — quando ela existir, limpe; SQL
    administrativo contra produção não é o caminho.
-8. **Acompanhar a depreciação de `tsx`** ou substituir o `check-railway` por execução via
+7. **Acompanhar a depreciação de `tsx`** ou substituir o `check-railway` por execução via
    SDK já empacotado, se a CLI deixar de exigir o loader.
-9. **Revisar `railway config plan`** quando houver CLI disponível para assumir
+8. **Revisar `railway config plan`** quando houver CLI disponível para assumir
    gerenciamento IaC, sem aplicar remotamente a partir deste repositório.
 
 ## Regra de manutenção
