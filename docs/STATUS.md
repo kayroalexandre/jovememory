@@ -1,4 +1,31 @@
-# Estado da entrega — 2026-10-05
+# Estado da entrega — 2026-10-07
+
+O documento mantém o histórico por versão. Para o estado vigente, os limites conhecidos e
+a ordem do que fazer, consulte [PLAN.md](PLAN.md).
+
+## Correções de 0.5.1
+
+Auditoria de código e documentação encontrou e corrigiu quinze defeitos não cobertos pelos
+gates existentes, todos com teste de regressão: herança de validade em substituição, nós
+inexistentes, erros de constraint opacos, ordenação não determinística em dois braços de
+busca, uma transação por item em três ferramentas de página, diff quadrático de fontes,
+re-hasheamento completo do repositório a cada chamada do conector, carga de banco não
+autenticada, payload de modelo sem orçamento, linhas inalcançáveis após corte por
+orçamento, regex de workspace desatualizada, heading de ingestão descartado, limites de PDF
+engolidos, `memory_record.locator` fora do contrato de segurança, auditoria sem projeção e
+`tsx` como dependência apenas transitiva.
+
+Gates locais após a revisão: `npm run verify` passa com 32 testes unitários, e a integração
+em Compose isolado passa com 26 cenários (27 resultados TAP) cobrindo as 43 ferramentas.
+`npm audit --omit=dev` sem vulnerabilidade conhecida. `npm run lint` passou a exigir que
+`VERSION`, `package.json` e `CHANGELOG.md` declarem a mesma versão, fechando uma
+incoerência em que o changelog anunciava uma release inexistente no código.
+Um falso positivo sobre conflito de variáveis de banco em `.railway/railway.ts` foi
+verificado e descartado; ver PLAN.md.
+
+Esta revisão **não foi commitada, mergeada, publicada ou implantada**. A instância em
+produção continua em 0.5.0 e não contém estas correções; isso foi confirmado por sonda
+somente-leitura.
 
 ## Implementado
 
@@ -54,11 +81,12 @@ e métricas globais sem corpus implementados. JOSE 6.2.12 foi fixado como depend
 para validação de tokens. O teto de preço pago foi retirado por decisão do operador;
 o histórico 0.4.0 acima descreve a política anterior.
 
-Gates completos locais passaram: syntax/version, scanner público, 24 testes
+Gates completos locais passaram: syntax/version, scanner público, 32 testes
 unitários e auditoria npm sem vulnerabilidade conhecida. Validação em Compose
-isolado: 23 cenários de integração (24 resultados TAP),
+isolado: 26 cenários de integração (27 resultados TAP),
 incluindo todos os 43 nomes MCP, broker stdio real com Git temporário, bloqueio de
 colisão, escopo/revogação de JWT, RLS nas tabelas novas, mudanças de fontes,
-revalidação concorrente, registro por chave/ambiguidade, retirement e backup/restore
+revalidação concorrente, registro por chave/ambiguidade, herança de validade em
+substituição, validação de nó, heading de ingestão, retirement e backup/restore
 com fingerprint de projects/sources/telemetry. Publicação e operação desta versão
 exigem gates completos e smoke privado após deploy; implementação não basta.

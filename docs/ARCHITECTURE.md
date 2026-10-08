@@ -38,7 +38,19 @@ Checkpoints e registros tipados reutilizam a política de escrita; no modo autom
 
 Configuração operacional fica no ambiente: `.env` local privado ou variáveis Railway. Não existe armazenamento de chaves de provedor em banco, formulário administrativo, senha distribuída, workspace pessoal padrão ou seed de conteúdo. Perfis contêm somente hashes dos tokens e escopo autorizado. Configuração é validada ao iniciar; alterações requerem reiniciar. Ativar o provedor sem uma chave privada impede iniciar o serviço. A chave local fica em arquivo externo ao checkout; o `.env` conserva apenas o caminho.
 
-O serviço não usa worker/Redis/cron próprio. Novos itens elegíveis recebem indexação após o commit da escrita ou aceite; falhas são declaradas e não revertem uma memória já ativada. O UPDATE do vetor verifica ID/hash/status na transação RLS, evitando publicar vetores de versões alteradas. Indexação do backlog é explícita via CLI; modelos são APIs externas opcionais. Instalação e testes não geram custos de modelo. O cache de embeddings do processo tem 128 entradas, chave por hash/modelo/dimensão e não registra conteúdo em logs.
+O serviço não usa worker/Redis/cron próprio. Novos itens elegíveis recebem indexação após o commit da escrita ou aceite; falhas são declaradas e não revertem uma memória já ativada. O UPDATE do vetor verifica ID/hash/status na transação RLS, evitando publicar vetores de versões alteradas. Indexação do backlog é explícita via CLI; modelos são APIs externas opcionais. Instalação e testes não geram custos de modelo. O cache de embeddings do processo mantém 128 entradas (a 129ª descarta a mais antiga), chave por hash/modelo/dimensão e não registra conteúdo em logs.
+
+Substituir um item herda a janela de validade do antecessor quando o chamador omite
+`valid_from`/`valid_until`; só um valor explicitamente enviado muda a janela. Sem isso,
+uma atualização normal apagaria o prazo de um fato temporário sem deixar rastro na
+auditoria. Nó inexistente é validado antes da escrita. Violações de constraint do
+Postgres são traduzidas em códigos acionáveis, porque uma disputa legítima entre duas
+revisões não é uma falha de infraestrutura.
+
+Texto enviado a rerank e a síntese é limitado por `RERANK_PAYLOAD_BYTES` (1 MiB por
+padrão) e devolvido truncado com `content_bytes`; a evidência entregue ao agente
+continua completa e relível por `memory_read`. Isso mantém o custo e o tamanho da
+requisição dentro do orçamento declarado em vez de reprovar a chamada inteira.
 
 A camada de modelos é roteada por função, não por um único modelo genérico. Gemini Embedding 2 gera vetores multimodais; Solar Decide atende gates probabilísticos pela Decisions API; Qwen3.8 Flash faz rerank com JSON Schema e reasoning desativado; DeepSeek V4 Flash produz análise auxiliar e resumo de consolidação; A rota gratuita do OpenRouter compacta contexto com IDs citados; preferências de modelos maiores precedem o roteador aleatório. Qwen e DeepSeek conservam seus papéis em rerank/enriquecimento, e a síntese usa fallbacks pagos explícitos sem teto de preço pago, inclusive quando o primeiro modelo devolve JSON fora do contrato. Decisions não recebe fallback generativo. Fallbacks são declarados no resultado por modelo efetivo e status de degradação. Qwen e DeepSeek recebem JSON Schema estrito; a validação local continua obrigatória. Saídas gerativas são auxiliares e nunca substituem conteúdo lossless, hashes ou referências persistidas.
 
@@ -56,7 +68,7 @@ Um projeto recebe nome de workspace explícito e perfil limitado a ele; associa�
 
 ## Inferência gratuita e fallbacks com orçamento
 
-Na versão 0.4.0, síntese usa `openrouter/free` como rota lógica. Antes do roteador aleatório, o provedor consulta `/models` e envia `models` em ordem de preferência ao OpenRouter. Só entram candidatos de texto com preço zero, identidade válida e contexto conservador suficiente; áudio, embeddings e classificadores de segurança não compõem essa lista. Preferências explícitas vêm antes de tamanho divulgado/contexto. Catálogo tem TTL de dez minutos, limite de 8 MiB e timeout de cinco segundos; falha usa o roteador geral, com nova tentativa de catálogo após um minuto. Não há consulta de corpus para escolher o modelo.
+Na versão 0.4.0, síntese usa `openrouter/free` como rota lógica. Antes do roteador aleatório, o provedor consulta `/models` e envia `models` em ordem de preferência ao OpenRouter. Só entram candidatos de texto com preço zero, identidade válida e contexto conservador suficiente; áudio, embeddings e classificadores de segurança não compõem essa lista. Preferências explícitas vêm antes de tamanho divulgado/contexto. A lista filtrada é limitada a **três candidatos** por chamada; cada um é tentado por vez, em ordem. Catálogo tem TTL de dez minutos, limite de 8 MiB e timeout de cinco segundos; falha usa o roteador geral, com nova tentativa de catálogo após um minuto. Não há consulta de corpus para escolher o modelo.
 
 Tentativas gratuitas impõem `max_price` zero para conservar sua natureza gratuita. Após falha HTTP, timeout, JSON inválido ou citação desconhecida, o fluxo usa fallbacks pagos configurados, ordenando provedores por preço, **sem teto pago**. As variáveis antigas de teto não são lidas desde 0.5.0. A síntese tem orçamento global de 90 segundos, com tentativas gratuitas de até 20 segundos e pagas de até 30; o contexto considera também o tempo da recuperação. Modelos sem `response_format` podem atender ao prompt JSON, mas a validação local é obrigatória. Saída registra modelo real retornado pelo OpenRouter e classe da rota; ausência dessa identidade no roteador gratuito faz a tentativa falhar.
 
@@ -89,10 +101,14 @@ aceitar uma observação concorrente antiga. Retirement conserva texto/auditoria
 substituição da mesma chave serializa escritores por lock transacional.
 
 Métricas registram nome da ferramenta, sucesso/código de erro, duração e rota/modelo
-de síntese, sem argumentos, consultas, tokens ou conteúdo. Retenção é de 30 dias,
-com janela agregada de sete dias. Leituras/escritas de métricas usam RLS e falhas
-na telemetria não revertem operações de memória. Overview pagina workspaces
-autorizados e consulta cada um em sua própria transação; não há bypass global de RLS.
+de síntese, sem argumentos, consultas, tokens ou conteúdo. Apenas ferramentas que
+recebem `workspace` geram linha: `memory_version`, `memory_capabilities`,
+`memory_open_project` e `memory_overview` não são telemetrizados. A retenção de 30 dias
+é aplicada de forma preguiçosa, na próxima gravação daquele workspace, e portanto não
+é um prazo de parede garantido; a janela agregada de sete dias alimenta o overview.
+Leituras/escritas de métricas usam RLS e falhas na telemetria não revertem operações de
+memória. Overview pagina workspaces autorizados e consulta cada um em sua própria
+transação; não há bypass global de RLS.
 O observer vê agregados, enquanto somente administrador lê/administra corpus global.
 Fonte sem observação ou fonte antiga ainda exige julgamento do agente. Isso não
 é certificação de qualidade, prevenção absoluta de regressão ou importação de sessões.

@@ -28,4 +28,6 @@ Os padrões públicos continuam escrita 0,60 e travessia 0,75, **não calibrados
 
 ## Evidências já verificadas
 
-`npm test` mede schemas, autorização, regras de orçamento, paths de ingestão, limites do provedor e métricas sintéticas. A integração usa PostgreSQL/S3 locais próprios e clientes oficiais MCP, exercitando os 33 nomes com dados sintéticos, além de RLS, revisão concorrente, media/SHA-256 e restore em banco vazio. Vetores e gates do cenário semântico são simulados. Não houve medição paga nem importação de dados antigos.
+`npm test` mede schemas, autorização, regras de orçamento, paths de ingestão, limites do provedor e métricas sintéticas. A integração usa PostgreSQL/S3 locais próprios e clientes oficiais MCP, exercitando os 43 nomes com dados sintéticos, além de RLS, revisão concorrente, media/SHA-256 e restore em banco vazio. Vetores e gates do cenário semântico são simulados. Não houve medição paga nem importação de dados antigos.
+
+O dataset rotulado usa o contrato de nome de workspace vigente (`^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$`). Um workspace provisionado pelo conector a partir de um origin Git é aceito.

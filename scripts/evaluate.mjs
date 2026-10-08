@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { resolve, dirname } from 'node:path';
 import { z } from 'zod';
-import { config, ensure, safeError } from '../src/config.mjs';
+import { config, ensure, safeError, WORKSPACE_PATTERN } from '../src/config.mjs';
 import { externalDirectory } from './backup-lib.mjs';
 import { retrievalMetrics, calibration } from '../src/metrics.mjs';
 import { Store } from '../src/store.mjs';
@@ -18,7 +18,8 @@ try {
     console.log(JSON.stringify(calibration(schema.parse(data)),null,2));
   } else {
     ensure(mode==='retrieval','EVALUATION','Modes: retrieval or calibration.');
-    const cases=z.array(z.strictObject({workspace:z.string().regex(/^[a-z0-9][a-z0-9_-]{0,62}$/),query:z.string().min(1).max(8192),expected:z.array(z.uuid()).max(100)})).min(1).max(1000).parse(data);
+    // The workspace naming contract is the 0.5.0 one: Git-style ASCII names with dots, case and up to 100 characters.
+    const cases=z.array(z.strictObject({workspace:z.string().regex(WORKSPACE_PATTERN),query:z.string().min(1).max(8192),expected:z.array(z.uuid()).max(100)})).min(1).max(1000).parse(data);
     const c=config();ensure(!c.provider.enabled || flags.includes('--allow-provider'),'EVALUATION','Paid evaluation requires --allow-provider in addition to ENABLE_PROVIDER=true.');
     const profile=c.profiles.find(p=>p.id===profileId);ensure(profile,'CONFIG','Choose an explicit configured profile.');
     store=new Store(c.databaseUrl);const service=new Service(store,c),results=[];let degraded=0;

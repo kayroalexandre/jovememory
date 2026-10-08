@@ -17,7 +17,9 @@ Esta é uma reconstrução, com schema e transporte novos. O catálogo anterior 
 | Continuidade | `memory_context`, `memory_checkpoint`, `memory_resume` | Pacote limitado em bytes, checkpoints ativos automaticamente e referências relidas com hash/eligibilidade |
 | Estado de projeto | `memory_record`, `memory_project` | Tipos goal/decision/constraint/evidence/issue/procedure; basis e autoridade declaradas; medição exige data/referências; ambiguidades de valores ativos |
 
-São 28 nomes reconstruídos. As cinco adições são `memory_create_workspace`, `memory_create_node`, `memory_link`, `memory_index` e `memory_read_media`. Não há ferramentas anunciadas sem dispatch correspondente. Integração exercita os 33 nomes, com autorização real e persistência; caminhos de modelo são simulados, não medições pagas.
+São 28 nomes reconstruídos. As cinco adições originais são `memory_create_workspace`, `memory_create_node`, `memory_link`, `memory_index` e `memory_read_media`; a versão 0.5.0 acrescenta mais dez, chegando a **43 ferramentas**. Não há ferramentas anunciadas sem dispatch correspondente. A integração exercita os 43 nomes, com autorização real e persistência; caminhos de modelo são simulados, não medições pagas.
+
+O conector local (`src/project-bridge.mjs`) acrescenta `memory_connection_status`, que pertence ao bridge e não ao catálogo do serviço: um agente conectado por broker vê 44 nomes. As demais ferramentas do broker são as do escopo do projeto, com o campo `workspace` injetado e removido do schema.
 
 ## Mudanças deliberadas
 
@@ -29,7 +31,7 @@ São 28 nomes reconstruídos. As cinco adições são `memory_create_workspace`,
 - Consolidação aceita `ids`; atualização aceita `content`; revisão usa `action: accept|reject`. O schema MCP é a referência exata, não esta tabela resumida.
 - Ingestão segue a mesma política de escrita, com ativação automática padrão. Um manifesto cabe numa transação: falha não deixa um lote parcial aplicado. Alterar bytes exige nova prévia; versões anteriores não são automaticamente apagadas.
 - Mídia até 4 MiB. PNG/JPEG/WebP, PDF e texto têm verificação/extração declaradas; GIF/BMP/SVG, áudio e vídeo podem ser preservados como bytes privados. Não há OCR automático, descrição visionária, transcrição ou indexação semântica de áudio/vídeo. Imagem sem texto pode usar modelo multimodal explícito; suporte real do provedor precisa de validação.
-- Não há geração automática de respostas ou fatos. `memory_project` detecta divergência textual por chave na página, não contradições semânticas em todo o corpus. Fontes omitidas por orçamento/cursor não demonstram ausência.
+- Não há geração automática de respostas ou fatos. `memory_project` detecta divergência textual por chave na página, não contradições semânticas em todo o corpus. Fontes omitidas por orçamento/cursor não demonstram ausência. `memory_mutations` projeta a auditoria e omite `item`/`before`, que carregariam o conteúdo integral de cada item.
 - Backups são snapshots administrativos com mídia e manifest externo. Restore de verificação compara o banco e hashes de arquivos; repopular um Bucket de produção é procedimento separado e autorizado.
 
 ## O que não é herdado como garantia
@@ -37,6 +39,15 @@ São 28 nomes reconstruídos. As cinco adições são `memory_create_workspace`,
 Medidas de qualidade, corpus, calibração, chaves/modelos específicos, workspaces pessoais, configuração de clientes e estado operacional da instalação anterior não são defaults do novo projeto. Não houve importação de dados ou troca dos clientes antigos. Métricas antigas não certificam a qualidade deste código/corpus.
 
 A avaliação nova suporta Precision/Recall/Hit@10, MRR, consultas negativas e calibração com treino/holdout. A operação mantém os objetivos de diagnosticar, indexar backlog, fazer backup e testar restauração, usando comandos próprios. Consulte [EVALUATION.md](EVALUATION.md) e [OPERATIONS.md](OPERATIONS.md).
+
+## Limites conhecidos e declaração honesta
+
+- `memory_feedback` grava um passo auditado de `importance` e o valor é devolvido em `memory_list`/`memory_read`, mas **nenhuma consulta o usa para ordenar**. A ordenação vem de `ts_rank_cd`, distância de vetor e data de criação. Importância é sinal observável, não ajuste de recuperação.
+- `memory_record.authority` (`canonical|supporting|historical`) é persistido e relido, mas não influences ranking nem filtra Searches.
+- A lista de preferencias gratuitas filtrada pelo catálogo é limitada a **3 candidatos** por chamada, antes do fallback pago.
+- Limiares declarados (escrita 0,60 e travessia 0,75) **não são calibrados** por padrão; `memory_calibration` só existe como `npm run evaluate -- calibration`.
+- Telemetria só é registrada para ferramentas que recebem `workspace`. `memory_version`, `memory_capabilities`, `memory_open_project` e `memory_overview` não geram linha em `telemetry`.
+- Os nomes de repositório aceitos seguem `^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$` (Git usual). A regex antiga em `scripts/evaluate.mjs` foi corrigida para o mesmo contrato e agora é derivada de `WORKSPACE_PATTERN`, declarado uma única vez em `src/config.mjs`.
 
 ## Contrato 0.3.0
 
@@ -64,5 +75,38 @@ Busca/contexto/releitura/retomada/projeto incluem diagnóstico de fontes;
 `memory_maintenance` inclui itens ativos expirados que a recuperação normal exclui.
 Fontes alteradas permanecem legíveis com aviso até o agente verificar, atualizar ou
 retirar o fato. `memory_changes` traz sequências e metadados de mutação, sem snapshots
-de corpus; cursor/limite declaram a página. Fallback pago não recebe `max_price`;
-variáveis de preço antigas são ignoradas. Tentativas gratuitas conservam teto zero.
+de corpus; cursor/limite declaram a página. `memory_mutations` projeta a auditoria
+para `sequence`, `operation`, `item_id`, `actor`, `created_at` e `payload` sem as
+chaves `item`/`before`, que guardariam o conteúdo integral de cada item.
+Fallback pago não recebe `max_price`; variáveis de preço antigas são ignoradas.
+Tentativas gratuitas conservam teto zero.
+
+## Correções de 0.5.1
+
+- `memory_update_item` **herda** a janela de validade do antecessor quando o chamador
+  omite `valid_from`/`valid_until`. Antes, a substituição apagava o prazo e tornava
+  permanente um fato temporário, sem auditoria. Janela explícita continua substituindo.
+- Nó inexistente em escrita, movimentação ou criação de nó-pai é recusado com `NODE`
+  antes de chegar ao banco, em vez de virar erro de infraestrutura.
+- Violações de constraint do Postgres (`23505`, `23503`, `23514`, `40001`, `40P01`)
+  viram `Fault` com código acionável (`CONFLICT`, `REFERENCE`, `INPUT`) em vez de `INTERNAL`.
+- Ingestão persiste o `heading` da seção, que já era usado no UUID determinístico e na prévia.
+- Limites de PDF (páginas e tamanho de texto) deixam de ser engolidos como
+  `pdf_extraction_unavailable`; agora propagam `LIMIT` e não silenciam a recusa.
+- `memory_record.locator` usa o mesmo contrato de locator seguro de `source_refs`.
+- `memory_project`, `memory_resume` e `memory_maintenance` leem fontes uma única vez e
+  diagnosticam referências em lote, em vez de uma transação por item.
+- `bounded()` reancla o cursor da página na última linha retida, para que linhas
+  cortadas pelo orçamento continuem alcançáveis; paginação que não coubse nenhum item
+  falha com `BUDGET` em vez de devolver página vazia com cursor já exaurido.
+- `graph()` e a busca lexical de mídia recebem ordenação determinística, porque a fusão
+  RRF depende da ordem de cada braço.
+- O payload enviado a rerank e síntese é limitado por `RERANK_PAYLOAD_BYTES` (1 MiB por
+  padrão) sem alterar a evidência devolvida ao agente.
+- `/health` responde por cache curto e o caminho JWT valida o formato antes de gastar
+  ida ao banco, reduzindo carga não autenticada.
+- O conector local reobserva fontes quando o estado Git muda ou a janela de 60s expira,
+  em vez de re-hashear toda a árvore a cada chamada.
+- `tsx` passa a ser dependência de desenvolvimento declarada, e não apenas transitiva de `railway`.
+- `npm run lint` exige que `VERSION`, `package.json` e `CHANGELOG.md` declarem a mesma
+  versão. Antes, um changelog anunciando uma release inexistente passava sem aviso.

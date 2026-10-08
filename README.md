@@ -84,7 +84,9 @@ Integração usa bancos descartáveis e Bucket sintético no Compose próprio; e
 - [Operação, produção e backups](docs/OPERATIONS.md)
 - [Integração MCP e autorização](docs/AGENTS-INTEGRATION.md)
 - [Avaliação e limites](docs/EVALUATION.md)
+- [Ciclo de vida de memória e conector](docs/MEMORY-LIFECYCLE.md)
 - [Estado verificado da entrega](docs/STATUS.md)
+- [Plano, limites conhecidos e próximos passos](docs/PLAN.md)
 
 Licença Apache-2.0. O repositório distribui software e exemplos sintéticos; nenhuma memória, credencial ou configuração pessoal faz parte da distribuição.
 

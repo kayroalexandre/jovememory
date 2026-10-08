@@ -7,7 +7,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { ListToolsRequestSchema,CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { VERSION,ensure,hash,safeError,validateEndpoint } from './config.mjs';
-import { identifyRepository,observeRepository } from './repository.mjs';
+import { identifyRepository,observeRepository,observeRepositoryState } from './repository.mjs';
 import { AGENT_INSTRUCTIONS } from './lifecycle.mjs';
 async function externalFile(file,root) {
   const actual=await realpath(file),rel=relative(root,actual);ensure(rel==='..' || rel.startsWith('../'),'CONFIG','Broker configuration and credentials must live outside the project.');return actual;
@@ -16,7 +16,7 @@ export async function startBridge({directory=process.cwd(),configPath=process.en
   let project,connectionError;
   try {project=await identifyRepository(directory);}catch(e){connectionError=e.code || 'REPOSITORY';}
   const server=new Server({name:'jovememory-project',version:VERSION},{capabilities:{tools:{listChanged:true}},instructions:AGENT_INSTRUCTIONS+(project?' Current repository: '+project.repository_name+'. The broker supplies the workspace; project credentials cannot read other projects.':' No repository is bound. Memory is unavailable until the client opens a Git repository with a canonical origin.')});
-  let remote,expires=0,lastDigest,lastSync=0,syncing,syncError;
+  let remote,expires=0,lastDigest,lastState,lastSync=0,syncing,syncError;
   async function connect() {
     const file=await externalFile(configPath,project.root),settings=JSON.parse(await readFile(file,'utf8'));
     validateEndpoint(settings.endpoint);const endpoint=new URL(settings.endpoint);ensure(endpoint.pathname==='/mcp','CONFIG','Broker endpoint must be the MCP endpoint.');
@@ -32,19 +32,32 @@ export async function startBridge({directory=process.cwd(),configPath=process.en
       const recovering=Boolean(connectionError);connectionError=null;if(recovering) await server.sendToolListChanged().catch(()=>{});
     } finally {await controller.close();}
   }
-  async function sync(force=false) {
+  async function sync(force=false,knownState) {
     if(!force && Date.now()-lastSync<2000) return;
     if(syncing) return syncing;
     syncing=(async()=>{
       if(!remote || Date.now()>expires-60000) await connect();
+      const state=knownState ?? await observeRepositoryState(project.root);
+      // An unchanged tree yields identical hashes, so the expensive re-hash is skipped.
+      if(state===lastState) {lastSync=Date.now();syncError=null;return;}
       const observation=await observeRepository(project),digest=hash(JSON.stringify(observation));
       if(digest!==lastDigest) {
         const r=await remote.callTool({name:'memory_sync_sources',arguments:{workspace:project.repository_name,...observation}});
         ensure(!r.isError,'SOURCE_SYNC','Source observation could not be persisted.');lastDigest=digest;
       }
-      lastSync=Date.now();syncError=null;
+      lastState=state;lastSync=Date.now();syncError=null;
     })().catch(e=>{syncError=e.code || 'SOURCE_SYNC';throw e;}).finally(()=>{syncing=null;});return syncing;
   }
+  // A tool call re-hashes only when the working tree actually changed or the refresh window elapsed.
+  const SYNC_INTERVAL_MS=60000;
+  const refresh=async()=>{
+    if(Date.now()-lastSync<SYNC_INTERVAL_MS) {
+      const state=await observeRepositoryState(project.root);
+      if(state===lastState) return;
+      return sync(true,state);
+    }
+    return sync(true);
+  };
   if(project) try {await connect();await sync(true);}catch(e){connectionError=e.code || 'CONNECTION';}
   const statusTool={name:'memory_connection_status',description:'Current repository binding and source observation status without credentials.',inputSchema:{type:'object',properties:{},additionalProperties:false}};
   server.setRequestHandler(ListToolsRequestSchema,async()=>{
@@ -69,7 +82,7 @@ export async function startBridge({directory=process.cwd(),configPath=process.en
       ensure(!['memory_open_project','memory_overview','memory_revoke_project','memory_cross_workspace','memory_create_workspace','memory_link','memory_index'].includes(name),'FORBIDDEN','Administrative and cross-project operations are not exposed by this project connection.');
       ensure(!args.workspace || args.workspace===project.repository_name,'FORBIDDEN','Requested workspace is not this project.');
       const current=await identifyRepository(project.root);ensure(current.repository_id===project.repository_id,'PROJECT_CHANGED','Repository changed; reconnect memory.');
-      try {await sync(true);}catch(e){if(e.code==='PROJECT_CHANGED') throw e;}
+      try {await refresh();}catch(e){if(e.code==='PROJECT_CHANGED') throw e;}
       const hasWorkspace=!['memory_version','memory_capabilities'].includes(name);
       const result=await remote.callTool({name,arguments:{...args,...(hasWorkspace?{workspace:project.repository_name}:{})}},undefined,{timeout:240000});
       if(syncError && result.structuredContent) {
@@ -79,7 +92,7 @@ export async function startBridge({directory=process.cwd(),configPath=process.en
       return result;
     }catch(error){return {isError:true,content:[{type:'text',text:JSON.stringify(safeError(error))}]};}
   });
-  const timer=project?setInterval(()=>{void sync(true).catch(()=>{});},60000):null;timer?.unref();
+  const timer=project?setInterval(()=>{void refresh().catch(()=>{});},SYNC_INTERVAL_MS):null;timer?.unref();
   server.onclose=()=>{if(timer) clearInterval(timer);void remote?.close();};
   await server.connect(transport || new StdioServerTransport(process.stdin,process.stdout,{maxBufferSize:8388608}));return server;
 }

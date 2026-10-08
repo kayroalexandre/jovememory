@@ -127,8 +127,50 @@ test('Isolated database, object storage, MCP and backup lifecycle',async t=>{
       const next=await call('memory_list',{workspace:'synthetic-a',limit:1,cursor:page.next_cursor,as_of:page.as_of},reader);assert.notEqual(next.items[0].id,page.items[0].id);
       await assert.rejects(call('memory_list',{workspace:'synthetic-a',limit:1,cursor:page.next_cursor,as_of:page.as_of,status:'proposed'},reader),{code:'CURSOR'});
     });
-    await t.test('Lossless consolidation retains immutable sources and invalidates only after review',async()=>{
-      const plan=await call('memory_consolidate',{workspace:'synthetic-a',ids:sourceIds});
+    await t.test('Replacement inherits the validity window and declared nodes are validated before writing',async()=>{
+      const bounded=(await call('memory_propose_write',{workspace:'synthetic-a',content:'Synthetic lease zinnia expires next year.',valid_from:'2026-01-01T00:00:00Z',valid_until:'2099-01-01T00:00:00Z'})).item;
+      await accept(bounded.id);
+      assert.equal(new Date(bounded.valid_until).toISOString(),'2099-01-01T00:00:00.000Z');
+      // Omitting the window must inherit it, not silently make a time-limited fact permanent.
+      const successor=await call('memory_update_item',{workspace:'synthetic-a',id:bounded.id,content:'Revised synthetic lease zinnia.',reason:'Clarify the same window'});
+      assert.equal(new Date(successor.item.valid_from).toISOString(),'2026-01-01T00:00:00.000Z');
+      assert.equal(new Date(successor.item.valid_until).toISOString(),'2099-01-01T00:00:00.000Z');
+      await accept(successor.item.id);
+      // An explicit window replaces the inherited one.
+      const extended=await call('memory_update_item',{workspace:'synthetic-a',id:successor.item.id,content:'Synthetic lease zinnia extended.',valid_until:'2098-01-01T00:00:00Z',reason:'Explicit new window'});
+      assert.equal(new Date(extended.item.valid_until).toISOString(),'2098-01-01T00:00:00.000Z');
+      assert.equal(new Date(extended.item.valid_from).toISOString(),'2026-01-01T00:00:00.000Z');
+      await accept(extended.item.id);
+      await assert.rejects(call('memory_move_item',{workspace:'synthetic-a',id:extended.item.id,node:'docs/does-not-exist',reason:'Missing node'}),{code:'NODE'});
+      await assert.rejects(call('memory_propose_write',{workspace:'synthetic-a',content:'Synthetic orphan item.',node:'docs/absent-node'}),{code:'NODE'});
+      await assert.rejects(call('memory_create_node',{workspace:'synthetic-a',node:'docs/parent',label:'Parent',parent:'docs/absent'}),{code:'NODE'});
+      await call('memory_create_node',{workspace:'synthetic-a',node:'docs/parent',label:'Parent'});
+      const moved=await call('memory_move_item',{workspace:'synthetic-a',id:extended.item.id,node:'docs/parent',reason:'Organised synthetic lease'});
+      assert.equal(moved.operation,'move');assert.equal((await call('memory_read',{workspace:'synthetic-a',id:extended.item.id},reader)).item.node,'docs/parent');
+      // A second pending replacement of the same predecessor is a conflict, not an opaque infrastructure error.
+      const first=await call('memory_update_item',{workspace:'synthetic-a',id:extended.item.id,content:'Synthetic lease revision one.',reason:'First pending revision'});
+      await assert.rejects(call('memory_update_item',{workspace:'synthetic-a',id:extended.item.id,content:'Synthetic lease revision two.',reason:'Competing pending revision'}),{code:'CONFLICT'});
+      await call('memory_review',{workspace:'synthetic-a',id:first.item.id,action:'reject',reason:'Superseded synthetic revision'},reviewer);
+    });
+    await t.test('Ingestion persists the previewed section heading and audit reads exclude item content',async()=>{
+      const input={workspace:'synthetic-a',source:'docs/zinnia-heading.md',content:'# Retained heading\nSynthetic zinnia heading material.\n'};
+      const preview=await call('memory_ingest_markdown',input);
+      assert.equal(preview.sections[0].heading,'Retained heading');
+      const applied=await call('memory_ingest_markdown',{...input,dry_run:false,plan_hash:preview.plan_hash});
+      await accept(applied.results[0].id);
+      const stored=await call('memory_read',{workspace:'synthetic-a',id:applied.results[0].id},reader);
+      assert.equal(stored.item.metadata.heading,'Retained heading');assert.equal(stored.item.metadata.source,'docs/zinnia-heading.md');
+      const long='Synthetic audit body '.repeat(400);
+      const written=await call('memory_propose_write',{workspace:'synthetic-a',content:long});await accept(written.item.id);
+      const mutations=await call('memory_mutations',{workspace:'synthetic-a',id:written.item.id,limit:10},reader);
+      assert.equal(mutations.mutations[0].operation,'propose');
+      assert.ok(!JSON.stringify(mutations).includes('Synthetic audit body'));
+      assert.ok(!('item' in mutations.mutations[0].payload));
+      // Untracked memories declare unknown source freshness instead of claiming verification.
+      assert.equal(stored.item.lifecycle.status,'untracked');
+      assert.equal(stored.item.lifecycle.source_diagnostics.length,0);
+    });
+    await t.test('Lossless consolidation retains immutable sources and invalidates only after review',async()=>{      const plan=await call('memory_consolidate',{workspace:'synthetic-a',ids:sourceIds});
       const proposed=await call('memory_consolidate',{workspace:'synthetic-a',ids:sourceIds,dry_run:false,plan_hash:plan.plan_hash});
       assert.ok(proposed.item.content.includes('Synthetic archival material.'));assert.equal((await service.store.read('synthetic-a',sourceIds[0])).status,'active');
       await accept(proposed.item.id);
@@ -449,6 +491,22 @@ test('Isolated database, object storage, MCP and backup lifecycle',async t=>{
       assert.equal((await call('memory_read',{workspace:'synthetic-a',id:itemId},reader)).item.status,'deleted');
       assert.equal((await call('memory_search_media',{workspace:'synthetic-a',query:'cobalt transcript'},reader)).results.length,0);
       await assert.rejects(call('memory_read_media',{workspace:'synthetic-a',id:mediaId},reader),{code:'MEDIA'});
+    });
+    // Runs last: these writes would otherwise push earlier audit assertions out of their page.
+    await t.test('Budget-trimmed rows stay reachable through the re-anchored cursor',async()=>{
+      const bulky='Synthetic resume checkpoint body '.repeat(40);
+      for(let i=0;i<25;i++) {const cp=await call('memory_checkpoint',{workspace:'synthetic-a',session:'budget-session',title:`Budget checkpoint ${i}`,summary:`${bulky} #${i}`});await accept(cp.item.id);}
+      const trimmed=await call('memory_resume',{workspace:'synthetic-a',session:'budget-session',max_bytes:4096},reader);
+      assert.ok(trimmed.checkpoints.length<20,'Expected budget trimming to drop rows.');
+      assert.ok(trimmed.omitted_ids.length>0);assert.ok(Buffer.byteLength(JSON.stringify(trimmed))<=4096);
+      assert.ok(trimmed.next_cursor,'Trimmed page lost its cursor.');
+      assert.ok(!trimmed.omitted_ids.includes(trimmed.checkpoints.at(-1).id),'Cursor was anchored to a dropped row.');
+      const recovered=await call('memory_resume',{workspace:'synthetic-a',session:'budget-session',max_bytes:131072,cursor:trimmed.next_cursor,as_of:trimmed.as_of},reader);
+      assert.ok(recovered.checkpoints.length>0,'Re-anchored cursor returned no rows.');
+      const reachable=new Set([...trimmed.checkpoints,...recovered.checkpoints].map(x=>x.id));
+      assert.ok(trimmed.omitted_ids.some(id=>reachable.has(id)),'An omitted checkpoint is unreachable.');
+      // A budget too small to retain any row of a page fails instead of stranding the whole page.
+      await assert.rejects(call('memory_resume',{workspace:'synthetic-a',session:'budget-session',max_bytes:1024},reader),{code:'BUDGET'});
     });
     assert.equal(called.size,43,`Missing tools: ${Object.keys((await import('../src/schemas.mjs')).TOOLS).filter(x=>!called.has(x))}`);
   } finally {

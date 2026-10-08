@@ -2,7 +2,7 @@ import pg from 'pg';
 import { randomBytes } from 'node:crypto';
 import { writeFile, readFile, mkdir, chmod } from 'node:fs/promises';
 import { S3Client, CreateBucketCommand, HeadBucketCommand } from '@aws-sdk/client-s3';
-import { config, ensure, hash, safeError } from './config.mjs';
+import { config, ensure, hash, safeError, WORKSPACE_PATTERN } from './config.mjs';
 import { Store } from './store.mjs';
 import { Service } from './service.mjs';
 const [command,...args]=process.argv.slice(2);
@@ -19,14 +19,14 @@ try {
     catch {await s3.send(new CreateBucketCommand({Bucket:c.s3.bucket}));}
     console.log('Local runtime role and private bucket ready. Provision an explicit workspace next.');
   } else if(command==='workspace') {
-    const name=args[0];ensure(/^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$/.test(name || ''),'INPUT','Supply an explicit workspace name.');
+    const name=args[0];ensure(WORKSPACE_PATTERN.test(name || ''),'INPUT','Supply an explicit workspace name.');
     const c=config(),profile=c.profiles.find(p=>p.role==='admin' && (p.workspaces.includes('*') || p.workspaces.includes(name)));
     ensure(profile,'CONFIG','Configure an administrative profile authorized for this workspace.');
     store=new Store(c.databaseUrl);await new Service(store,c).call('memory_create_workspace',{workspace:name},profile);
     console.log('Workspace provisioned.');
   } else if(command==='profile') {
     const [id,role,...workspaces]=args;
-    ensure(/^[a-z0-9_-]{1,64}$/.test(id || '') && ['reader','writer','reviewer','admin','provisioner','observer'].includes(role) && workspaces.length && workspaces.every(w=>/^(\*|[A-Za-z0-9][A-Za-z0-9_.-]{0,99})$/.test(w)),
+    ensure(/^[a-z0-9_-]{1,64}$/.test(id || '') && ['reader','writer','reviewer','admin','provisioner','observer'].includes(role) && workspaces.length && workspaces.every(w=>w==='*' || WORKSPACE_PATTERN.test(w)),
       'INPUT','Usage: profile <id> <reader|writer|reviewer|admin|provisioner|observer> <workspace...>');
     await mkdir('private',{recursive:true,mode:0o700});await chmod('private',0o700);
     const token=randomBytes(32).toString('base64url');

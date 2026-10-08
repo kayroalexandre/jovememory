@@ -1,8 +1,8 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { lstat,readFile,realpath } from 'node:fs/promises';
-import { resolve,relative,basename } from 'node:path';
-import { ensure,hash } from './config.mjs';
+import { resolve,relative } from 'node:path';
+import { ensure,hash,WORKSPACE_PATTERN } from './config.mjs';
 const execute=promisify(execFile);
 async function git(directory,args) {
   try {return (await execute('git',['-C',directory,...args],{encoding:'utf8',timeout:10000,maxBuffer:4194304,env:{...process.env,GIT_TERMINAL_PROMPT:'0',GIT_OPTIONAL_LOCKS:'0'}})).stdout.trim();}
@@ -20,7 +20,7 @@ export function remoteIdentity(remote) {
     }
     path=path.replace(/^\/+|\/+$/g,'').replace(/\.git$/i,'');
     ensure(path.includes('/') && !path.split('/').some(x=>!x || x==='..' || x==='.'),'REPOSITORY','Remote needs an owner and repository path.');
-    const name=path.split('/').at(-1);ensure(/^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$/.test(name),'REPOSITORY','Repository name is outside the supported Git naming contract.');
+    const name=path.split('/').at(-1);ensure(WORKSPACE_PATTERN.test(name),'REPOSITORY','Repository name is outside the supported Git naming contract.');
     const canonical=host+'/'+(host==='github.com'?path.toLowerCase():path);
     return {repository_id:hash(canonical),repository_name:name};
   } catch(error) {if(error.code) throw error;ensure(false,'REPOSITORY','Cannot normalize the Git origin.');}
@@ -50,4 +50,11 @@ export async function observeRepository(project) {
   }
   return {sources,revision,complete};
 }
-export function repositoryLabel(project) {return project.repository_name || basename(project.root);}
+// Cheap change detector: HEAD plus porcelain status, without reading any file contents.
+// Two Git subprocesses replace a full re-hash of the working tree.
+export async function observeRepositoryState(root) {
+  let revision='',status='';
+  try { revision=await git(root,['rev-parse','HEAD']); } catch { revision=''; }
+  try { status=await git(root,['status','--porcelain','-z','--untracked-files=no']); } catch { status=''; }
+  return hash(JSON.stringify([revision,status]));
+}
