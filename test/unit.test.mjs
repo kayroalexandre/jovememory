@@ -320,6 +320,12 @@ test('The connector detects working-tree change cheaply and only re-hashes when 
     const after=await observeRepositoryState(root);
     assert.notEqual(after,before);
     assert.equal((await observeRepository(project)).sources[0].sha256,hash('Synthetic tracked source, revised.'));
+    // A second edit of an already-dirty file: porcelain is byte-identical, so only a
+    // content-sensitive check can notice it.
+    await writeFile(root+'/tracked.md','Synthetic tracked source, revised twice.');
+    const second=await observeRepositoryState(root);
+    assert.notEqual(second,after,'Two contents of the same dirty file produced the same state.');
+    assert.equal((await observeRepository(project)).sources[0].sha256,hash('Synthetic tracked source, revised twice.'));
     await git('commit','-am','synthetic');
     const committed=await observeRepositoryState(root);
     assert.notEqual(committed,after);

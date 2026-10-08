@@ -63,5 +63,7 @@ que não observou, nem descarte versões antigas para esconder divergências.
 Memória sem fontes é `untracked`; fonte ausente/alterada pede revalidação, não
 confirma falsidade. Hash igual não demonstra verdade. Modelos de decisão/rerank
 apoiam seleção; o agente mantém liberdade técnica e responsabilidade pela tarefa.
-Overview global de observer fornece somente agregados privados. Não copie nomes,
-corpus ou evidências de clientes para a memória do projeto da própria aplicação.
+Overview global de observer fornece somente agregados privados, e desde 0.5.2 chega pelo
+**mesmo** servidor do broker, sem um MCP separado: `memory_overview` faz parte do catálogo
+do projeto. Não copie nomes, corpus ou evidências de clientes para a memória do projeto da
+própria aplicação.

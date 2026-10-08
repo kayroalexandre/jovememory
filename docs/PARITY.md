@@ -110,3 +110,46 @@ Tentativas gratuitas conservam teto zero.
 - `tsx` passa a ser dependência de desenvolvimento declarada, e não apenas transitiva de `railway`.
 - `npm run lint` exige que `VERSION`, `package.json` e `CHANGELOG.md` declarem a mesma
   versão. Antes, um changelog anunciando uma release inexistente passava sem aviso.
+- O estado barato do repositório passou a incluir `git diff HEAD`. Porcelain sozinho não
+  distingue dois conteúdos do mesmo arquivo já modificado, o que deixava o hash de fonte
+  obsoleto em silêncio.
+- Falhas de constraint passam a considerar o nome da constraint: uma colisão de
+  `projects.repository_id` entre workspaces distintos reporta `PROJECT_COLLISION`, e não a
+  mensagem genérica de item duplicado.
+
+## Contrato 0.5.2
+
+O observatório deixa de ser um servidor MCP separado e passa a ser servido pelo broker do
+próprio projeto. `memory_overview` continua sendo a ferramenta nº 3 das 43 do mesmo
+servidor, com o papel `observer` enxergando apenas ela.
+
+O broker aceita um bloco opcional `observer` na sua configuração privada, com um token de
+leitura global lido de arquivo externo ao projeto. O agente vê **um** servidor de memória:
+o catálogo do projeto e o do observatório são servidos pelo mesmo processo, e a chamada é
+encaminhada pela credencial correspondente. O token do observatório nunca chega ao agente,
+o que é mais restrito do que a configuração anterior, em que ele vivia no `Authorization`
+do cliente.
+
+O roteamento do observatório é uma **allowlist explícita** de `memory_overview`, e não a
+simples confiança no papel do token. Na conexão, o broker confere que o catálogo da
+credencial contém as ferramentas do observatório **e nada fora delas**; um token de
+perfil mais amplo é recusado com `OBSERVER_ROLE`. Confiar apenas no rótulo do papel seria
+uma invariante não verificada: um `observer.token_file` apontado por engano para um token
+de administrador transformaria o broker em um repasse global de privilégio, com argumentos
+do agente encaminhados sem a injeção de workspace.
+
+Argumentos são encaminhados sem o campo `workspace`, e a falha de uma chamada derruba a
+conexão do observatório para que o próximo ciclo reconecte e o catálogo volte a declarar
+apenas o que funciona. O observatório é global e permanece disponível mesmo quando o
+repositório atual não consegue se matricular. `memory_connection_status` declara
+`observatory.configured|connected|tools|error`. Sem o bloco `observer`, o comportamento
+anterior é preservado e o observatório aparece como não configurado.
+
+### Correção de 0.5.1 levada pela revisão do 0.5.2
+
+O estado barato do repositório passou a incluir `git diff HEAD`, e não só
+`status --porcelain`. Porcelain não contém hash de conteúdo: dois conteúdos diferentes do
+mesmo arquivo já modificado produzem saída byte a byte idêntica, e o hash de fonte ficava
+permanentemente obsoleto sem nenhum erro aparente. Isso invalidava justamente a invariante
+que sustenta `needs_revalidation` e `memory_revalidate`. O diff é barato (um subprocesso) e
+sensível ao conteúdo.
