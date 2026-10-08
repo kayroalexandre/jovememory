@@ -38,6 +38,41 @@ Copiar `.env.example` para `.env` não substitui `npm run local:init`, que gera 
 
 Topologia: aplicação `jovememory`, serviço PostgreSQL com extensão pgvector e Bucket privado de mídia. A aplicação não precisa de volume. Banco deve usar rede privada, com volume/backups nativos; não gere proxy TCP público permanente. O PostgreSQL padrão do Railway não inclui necessariamente pgvector: selecione imagem/template apropriado.
 
+### Como o deploy realmente acontece — verificado em 2026-10-08
+
+**Merge em `main` não deploya.** O projeto Railway não tem acesso ao repositório: o GitHub
+App da Railway não foi autorizado para `kayroalexandre/jovememory`, então **não existe
+gatilho de repositório** e a mutation `githubRepoDeploy` falha com "no one in the project has
+access to it". Todo deploy é explícito. Assumir o contrário é o erro que fez a produção
+rodar 0.5.0 durante dias com `main` em 0.4.0, sem ninguém notar.
+
+O procedimento verificado, a partir de um checkout limpo de `main`:
+
+```sh
+git checkout main && git pull
+railway up --detach -m "<versão>: <resumo>" \
+  --project <id> --environment <id> --service <id>
+```
+
+Acompanhe o deployment até `SUCCESS` — `--detach` retorna no upload, e o comando sair não
+é deploy feito. Consulte `railway deployment list` (ou a API de `deployments`) e só considere
+o deploy concluído com `SUCCESS` observado. Em seguida, o smoke da seção abaixo.
+
+Duas consequências desse caminho que valem registrar:
+
+- o deploy por upload **não grava hash de commit nem branch** no metadado do deployment;
+  ele grava a mensagem de `-m` e o digest da imagem. A rastreabilidade vem da mensagem
+  (use sempre o número de versão nela) e da conferência de `memory_version` depois do deploy;
+- por isso mesmo, o metadado `branch` de deployments antigos **não prova** de onde veio o
+  conteúdo. Houve deploy com `branch: "main"` registrado para um commit que nunca esteve no
+  `main` do GitHub. Confirme o que está rodando por `memory_version`/`memory_capabilities`,
+  não pelo metadado.
+
+Para que merge em `main` passe a deployar automaticamente, autorize o GitHub App da Railway
+sobre o repositório no dashboard e então crie um gatilho com `checkSuites`, para que o deploy
+só ocorra depois dos checks obrigatórios (`verify`, `secrets`). É uma ação de dashboard, não
+de API, e fica a critério do operador.
+
 O projeto Railway deve ser privado, embora o repositório de código seja público. Desative ambientes automáticos de PR no primeiro provisionamento; código de PR público não recebe credenciais de produção. Use serviços/dados/variáveis separados para homologação.
 
 A configuração nativa do serviço deve declarar Railpack, build `npm ci --omit=dev`, pre-deploy `npm run migrate`, start `npm start`, healthcheck `/health` (120 segundos), restart ON_FAILURE (5 tentativas) e drenagem de 20 segundos. Banco e Bucket têm configurações próprias.
@@ -87,6 +122,27 @@ Provisionar o primeiro workspace requer uma operação administrativa explícita
 O domínio deve apontar apenas para o serviço HTTP. Banco/S3 não têm páginas públicas. Memórias ativadas recebem embedding automaticamente. Falhas são declaradas sem perder a escrita. Backlog anterior exige `npm run index`; rerank de busca/contexto é padrão e aceita `rerank=false`. Um fluxo pode combinar chamadas de até 30 segundos por tentativa; configure o timeout de execução do cliente MCP em 240 segundos para permitir os fallbacks.
 
 Um deploy só é operacional depois de migrations, healthcheck, `tools/list`, chamada MCP autenticada, recusa de chamada anônima e verificação de escopo. Saúde não testa provedor/S3; esses caminhos têm smoke separado. Recursos staged são preparação, não produção ativa.
+
+### Smoke pós-deploy — executado e verificado em 2026-10-08
+
+O smoke mínimo executável sem credenciais administrativas, nesta ordem:
+
+1. `GET /health` anônimo → `200 {"status":"ready"}`.
+2. `POST /mcp` sem credencial e com token inválido → `401` nos dois.
+3. `GET /mcp` com método não permitido → `401` (autenticação antes do `405`).
+4. `Origin` externa → `403`.
+5. Pela conexão MCP do projeto: `memory_version` deve declarar a versão do deploy,
+   e `memory_capabilities.limits` deve conter os limites da versão
+   (`provider_candidate_bytes` a partir de 0.5.2). Uma versão antiga aqui significa
+   que o deploy não aconteceu, mesmo com o deployment marcado `SUCCESS`.
+6. Smoke comportamental: escreva um item com `valid_until`, substitua-o omitindo a janela
+   e confirme que o sucessor herdou a validade; retire os itens de teste em seguida.
+   Isso exercita a correção de herança de validade no caminho real, não só o número da versão.
+7. `memory_doctor` deve reportar o schema esperado e `database: ready`.
+
+O passo 5 é o que detecta a deriva que passou despercebida: a produção rodou 0.5.0
+enquanto o `main` declarava 0.4.0, e nenhum metadado de deployment revelava isso — só a
+versão relatada pelo próprio serviço.
 
 Fontes: [Railway Infrastructure as Code](https://docs.railway.com/infrastructure-as-code), [pgvector](https://docs.railway.com/guides/rag-pipeline-pgvector), [Bucket e referências](https://docs.railway.com/storage-buckets), [isolamento por ambiente](https://docs.railway.com/guides/isolate-staging-production).
 

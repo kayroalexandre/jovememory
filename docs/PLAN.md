@@ -10,9 +10,9 @@ com a instância de produção no Railway, não com este checkout — a topologi
 em "Topologia de desenvolvimento versus produção". O fluxo pretendido é: alterar e
 validar aqui, commit, PR, `main`, deploy, e só então smoke privado.
 
-Branch `codex/project-memory-lifecycle`, base `3a6f09f`, mais duas releases. Versão
-declarada: **0.5.2**. Commits feitos nesta sessão; `main` continua em `9d5c966` e nada foi
-publicado ou implantado.
+Branch `main`, versão declarada **0.5.2**, **publicada e implantada em produção em
+2026-10-08**. Deployment `d88bdccb` observado até `SUCCESS`; smoke completo executado
+contra produção.
 
 | Gate | Resultado |
 | --- | --- |
@@ -159,27 +159,22 @@ comportamento foi conferido antes de descartar a hipótese.
 
 Verificado na máquina de desenvolvimento, não presumido:
 
-| Item | Onde | Estado |
+| Item | Onde | Estado em 2026-10-08 |
 | --- | --- | --- |
-| `jovememory` (MCP do agente) | `~/.config/opencode/opencode.json` | bridge local, mas `broker-production.json` |
-| `jovememory-observatory` (MCP do agente) | `.opencode/opencode.json` do repo | remoto, Railway de produção |
-| `broker-production.json` | `~/.config/jovememory/` | `https://jovememory-production.up.railway.app/mcp` |
+| `jovememory` (MCP do agente) | `~/.config/opencode/opencode.json` | bridge local via `broker-production.json` |
+| `jovememory-observatory` | — | **removido**; o broker serve o observatório |
+| `broker-production.json` | `~/.config/jovememory/` | endpoint de produção + bloco `observer` |
 | `broker-development.json` | `~/.config/jovememory/` | `http://127.0.0.1:3007/mcp` — **não referenciado** |
-| Compose (postgres, storage) | `127.0.0.1:55471` / `:59071` | no ar, usado pelos testes |
+| Compose (postgres, storage) | `127.0.0.1:55471` / `:59071` | usado pelos testes |
 | Servidor HTTP local | `127.0.0.1:3007` | **fora do ar** |
 
-Consequência: **as duas conexões MCP do agente apontam para produção**. A memória escrita
-por um agente durante o desenvolvimento cai no banco de produção, enquanto o código
-descrito pode existir apenas na árvore de trabalho. Confirmado por sonda somente-leitura:
-a produção declara `0.5.0` e não expõe o limite de payload de modelo introduzido em 0.5.1.
+A conexão MCP do agente aponta para produção. A memória escrita durante o desenvolvimento
+cai no banco de produção, enquanto o código descrito pode existir apenas na árvore de
+trabalho. Registros devem declarar o estado de deploy ao afirmar que uma correção está em
+vigor.
 
-Isso é coerente com o fluxo pretendido (desenvolver local, validar, commit, PR, `main`,
-deploy), mas deixa um buraco: o agente não tem um caminho de memória que aponte para o
-servidor local, então não há como validar em memória de desenvolvimento antes do deploy.
-
-A unificação do observatório em 0.5.2 remove a entrada `jovememory-observatory` do cliente
-e resolve a metade disso que era configurável: um servidor de memória, um namespace de
-ferramentas, e o token de leitura global restrito ao broker.
+O buraco restante é o do meio: não há caminho de memória apontando para o servidor local,
+então não há como validar em memória de desenvolvimento antes do deploy.
 
 Opções, na ordem de menos risco:
 
@@ -217,44 +212,78 @@ trocar tudo por um único token.
 
 ## Plano de releases
 
-Duas releases separadas, por escolha do operador:
+Duas releases separadas, por escolha do operador, **publicadas em 2026-10-08**:
 
 - **0.5.1 — remediação.** As 15 correções desta revisão, com testes de regressão, mais a
   coerência de versão entre `VERSION`, `package.json` e `CHANGELOG.md`, agora verificada
-  por `npm run lint`. Commit `bd79129`.
+  por `npm run lint`.
 - **0.5.2 — unificação do observatório.** Mudança de contrato no broker: servir os dois
   catálogos com duas credenciais da config privada, encaminhar `memory_overview` por elas, e
   apagar a entrada `jovememory-observatory` do cliente. Fica sozinha porque altera o
   catálogo de ferramentas e o que o agente enxerga, e precisa de smoke próprio.
 
-Fluxo de cada uma: gates completos locais, commit, PR contra `main`, merge, deploy pela
-fonte, e **smoke privado depois do deploy**. Verificação local não prova operação.
+## Publicação de 2026-10-08 — o que foi feito e verificado
+
+PR #10 foi mergeado por rebase (o repositório não permite merge commit; squash colapsaria
+as duas releases que o operador pediu separadas). `main` saiu de 0.4.0 para 0.5.2, o que
+reconciliou o `main` com a produção — a produção já rodava 0.5.0, que o `main` nunca
+conteve.
+
+Deploy pelo CLI a partir de um checkout limpo de `main`; deployment `d88bdccb` observado
+até `SUCCESS`. Nenhuma migration nova, nenhum dado movido; a única variável nova tem default
+e não precisa ser declarada.
+
+Smoke executado contra produção: `/health` anônimo 200; `POST /mcp` sem credencial e com
+token inválido 401; método não permitido 401; `Origin` externa 403; `memory_version`
+declarando 0.5.2; `memory_capabilities.limits` contendo `provider_candidate_bytes`
+(1048576); `memory_doctor` com schema 3 e `database: ready`; smoke comportamental da
+herança de validade passou em produção e o item de teste foi retirado em seguida.
+
+Observatório: bloco `observer` adicionado ao `broker-production.json` apontando para o
+token de leitura global já existente; verificado com um processo bridge de teste contra
+produção (catálogo com `memory_overview`, `observatory.connected: true`, agregados sem
+conteúdo de corpus, workspace estrangeiro recusado); só então a entrada
+`jovememory-observatory` foi removida do cliente. O token global deixou de estar no
+processo do agente. Os backups das configurações anteriores ficaram fora do repositório.
+
+## Topologia de deploy — o mistério resolvido
+
+A contradição que bloqueava o merge tinha explicação simples, encontrada por introspecção
+da API: **o projeto Railway não tem acesso ao repositório**. O GitHub App da Railway não
+foi autorizado sobre `kayroalexandre/jovememory`, então não existe gatilho de repositório,
+a mutation `githubRepoDeploy` falha com "no one in the project has access to it", e
+**merge em `main` não deploya**. Os deployments antigos com `branch: "main"` no metadado
+vieram de deploys manuais por upload, cujo metadado de branch não descreve de onde o
+conteúdo veio — um deles registrou `main` para um commit que nunca esteve no `main` do
+GitHub.
+
+Consequências: o procedimento real de deploy está documentado em `OPERATIONS.md`
+(checkout de `main` + `railway up --detach` + acompanhar até `SUCCESS` + smoke), o metadado
+de deployment não é prova de conteúdo (confirme por `memory_version`), e o deploy
+automático exige autorizar o GitHub App no dashboard — ação do operador, não de API.
 
 ## O que fazer em seguida
 
-1. **Revisar o PR e decidir o merge.** Commits feitos nesta sessão; `main` continua em
-   9d5c966 e nada foi implantado.
-2. **Depois do deploy, configurar o bloco `observer` no broker de produção**, confirmar
-   `memory_connection_status.observatory.connected` e só então remover a entrada
-   `jovememory-observatory` do cliente. A ordem importa: remover a configuração antiga antes
-   de confirmar a nova perde o acesso às métricas.
-3. **Escolher a estratégia de memória local** entre as três opções acima, e executá-la
+1. **Decidir sobre o deploy automático.** Autorizar o GitHub App da Railway sobre o
+   repositório e criar o gatilho com `checkSuites`, para que merge em `main` só deploye
+   depois dos checks obrigatórios. É ação de dashboard; sem ela, todo deploy é manual.
+2. **Escolher a estratégia de memória local** entre as três opções acima, e executá-la
    antes do próximo ciclo de correções, para que validação em memória deixe de recair
    sobre produção.
-4. **Definir e verificar política de backup nativo do Railway** conforme a retenção
+3. **Definir e verificar política de backup nativo do Railway** conforme a retenção
    exigida. Hoje não há configuração nem verificação.
-5. **Medir o limite de 3 candidatos gratuitos** contra o catálogo real antes de assumi-lo
+4. **Medir o limite de 3 candidatos gratuitos** contra o catálogo real antes de assumi-lo
    como adequado.
-6. **Revisar `importance` e `authority`** com labels reais antes de dar qualquer efeito de
+5. **Revisar `importance` e `authority`** com labels reais antes de dar qualquer efeito de
    ordenação a eles.
-7. **Adicionar teste de integração de anexo de imagem** (PNG/JPEG/WebP). As verificações de
+6. **Adicionar teste de integração de anexo de imagem** (PNG/JPEG/WebP). As verificações de
    assinatura existem em `src/media.mjs` e estão cobertas por teste unitário das
    assinaturas, mas o caminho completo de anexo com imagem não é exercitado na integração.
-8. **Exercitar `pdf_extraction_unavailable`** com um PDF que o parser não consiga ler.
-9. **Acompanhar a depreciação de `tsx`** ou substituir o `check-railway` por execução via
+7. **Exercitar `pdf_extraction_unavailable`** com um PDF que o parser não consiga ler.
+8. **Acompanhar a depreciação de `tsx`** ou substituir o `check-railway` por execução via
    SDK já empacotado, se a CLI deixar de exigir o loader.
-10. **Revisar `railway config plan`** quando houver CLI disponível para assumir
-    gerenciamento IaC, sem aplicar remotamente a partir deste repositório.
+9. **Revisar `railway config plan`** quando houver CLI disponível para assumir
+   gerenciamento IaC, sem aplicar remotamente a partir deste repositório.
 
 ## Regra de manutenção
 
