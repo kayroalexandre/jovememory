@@ -3,6 +3,31 @@
 O documento mantém o histórico por versão. Para o estado vigente, os limites conhecidos e
 a ordem do que fazer, consulte [PLAN.md](PLAN.md).
 
+## Observatório unificado — 0.5.2
+
+O observatório deixa de ser um servidor MCP separado. `memory_overview` sempre foi a
+ferramenta nº 3 das 43 do mesmo servidor, e o papel `observer` sempre enxergou apenas ela;
+os dois nomes MCP eram duas configurações de cliente apontando ao mesmo serviço.
+
+O broker agora aceita um bloco opcional `observer` na sua config privada, conecta esse
+segundo cliente, acrescenta `memory_overview` ao catálogo do projeto e encaminha a chamada
+pela credencial de leitura global. O agente passa a ver **um** servidor de memória, e o
+token do observatório deixa de estar no processo dele — restrição maior do que a
+configuração anterior, não apenas diferente. O observatório é global e continua disponível
+quando o repositório atual não consegue se matricular. Sem o bloco `observer`, o broker
+funciona como antes e declara o observatório como não configurado.
+
+`memory_connection_status` ganhou `observatory.configured`, `connected`, `tools` e
+`error`. Nenhuma ferramenta do observatório aceita `workspace`.
+
+Gates após a mudança: 32 testes unitários e 28 resultados TAP de integração em 27
+cenários, cobrindo as 43 ferramentas. O teste novo foi verificado reintroduzindo a
+regressão: remover o encaminhamento interno faz o cenário falhar.
+
+Esta release ainda não foi implantada. A ordem correta após o deploy é configurar o bloco
+`observer`, confirmar `observatory.connected` e só então remover a entrada
+`jovememory-observatory` do cliente.
+
 ## Correções de 0.5.1
 
 Auditoria de código e documentação encontrou e corrigiu quinze defeitos não cobertos pelos
@@ -16,15 +41,15 @@ engolidos, `memory_record.locator` fora do contrato de segurança, auditoria sem
 `tsx` como dependência apenas transitiva.
 
 Gates locais após a revisão: `npm run verify` passa com 32 testes unitários, e a integração
-em Compose isolado passa com 26 cenários (27 resultados TAP) cobrindo as 43 ferramentas.
+em Compose isolado passa com 27 cenários (28 resultados TAP) cobrindo as 43 ferramentas.
 `npm audit --omit=dev` sem vulnerabilidade conhecida. `npm run lint` passou a exigir que
 `VERSION`, `package.json` e `CHANGELOG.md` declarem a mesma versão, fechando uma
 incoerência em que o changelog anunciava uma release inexistente no código.
 Um falso positivo sobre conflito de variáveis de banco em `.railway/railway.ts` foi
 verificado e descartado; ver PLAN.md.
 
-Esta revisão **não foi commitada, mergeada, publicada ou implantada**. A instância em
-produção continua em 0.5.0 e não contém estas correções; isso foi confirmado por sonda
+Esta revisão foi commitada, mas **não foi mergeada, publicada ou implantada**. A instância
+em produção continua em 0.5.0 e não contém estas correções; isso foi confirmado por sonda
 somente-leitura.
 
 ## Implementado

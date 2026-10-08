@@ -165,6 +165,42 @@ A revogação incrementa epoch e derruba credenciais emitidas, sem remover conte
 Controlador autorizado pode reconectar e emitir credencial nova; revogar controlador
 ou rotacionar sua configuração é operação independente.
 
+### Observatório dentro do broker — 0.5.2
+
+O observatório não precisa de um servidor MCP separado. Acrescente um bloco `observer`
+ao arquivo de broker, ao lado de `endpoint` e `provisioner_token_file`:
+
+```json
+{
+  "endpoint": "https://<servico>/mcp",
+  "provisioner_token_file": "/caminho/externo/controller.token",
+  "observer": { "token_file": "/caminho/externo/observer.token" }
+}
+```
+
+`observer.endpoint` é opcional e assume o mesmo `endpoint`. O token precisa ser um perfil
+`observer` de produção e o arquivo tem que estar fora do projeto, como os demais. Sem
+repositório vinculado, "fora do projeto" passa a significar fora do diretório de trabalho.
+
+Com isso o agente passa a ver **um** servidor de memória: o catálogo do projeto e o do
+observatório são servidos pelo mesmo processo, e `memory_overview` é encaminhada pela
+credencial de leitura global, que **não sai do broker**. Remova a entrada
+`jovememory-observatory` da configuração do cliente e reinicie o processo MCP.
+
+Verifique por `memory_connection_status.observatory`, que declara `configured`,
+`connected`, `tools` e `error`. Sem o bloco, o broker funciona como antes e declara o
+observatório como não configurado; nenhuma configuração existente quebra.
+
+O token precisa ser de um perfil **observer**. O broker confere isso pela capacidade
+efetiva do token, não pelo rótulo: se o catálogo da credencial expuser qualquer coisa além
+de `memory_overview`, a conexão é recusada com `OBSERVER_ROLE` e nada é encaminhado. Isso
+protege contra um `observer.token_file` apontado por engano para um token de administrador.
+Não contorne isso trocando o token; corrija o perfil.
+
+Antes de remover a configuração antiga, confirme `observatory.connected: true` e uma
+chamada de `memory_overview` pelo broker. Se o observatório falhar, a memória do projeto
+continua funcionando: as duas conexões são independentes por desenho.
+
 Não existe teto pago de inferência desde 0.5.0. A seleção permanece barata e
 `provider.sort=price`; free usa preços zero. Timeout, disponibilidade, contrato JSON
 ou saldo do provedor ainda podem degradar síntese e não são corrigidos pela remoção

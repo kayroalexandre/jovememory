@@ -50,11 +50,14 @@ export async function observeRepository(project) {
   }
   return {sources,revision,complete};
 }
-// Cheap change detector: HEAD plus porcelain status, without reading any file contents.
-// Two Git subprocesses replace a full re-hash of the working tree.
+// Cheap change detector: HEAD, porcelain status and the working-tree diff, without reading
+// file bytes one by one. The diff is what makes this content-sensitive: porcelain alone is
+// identical for two different contents of the same already-modified file, which would let a
+// source hash go stale without any error surfacing.
 export async function observeRepositoryState(root) {
-  let revision='',status='';
+  let revision='',status='',diff='';
   try { revision=await git(root,['rev-parse','HEAD']); } catch { revision=''; }
   try { status=await git(root,['status','--porcelain','-z','--untracked-files=no']); } catch { status=''; }
-  return hash(JSON.stringify([revision,status]));
+  try { diff=await git(root,['diff','HEAD','--no-color','--no-ext-diff']); } catch { diff=''; }
+  return hash(JSON.stringify([revision,status,diff]));
 }

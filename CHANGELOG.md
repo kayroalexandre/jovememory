@@ -1,5 +1,49 @@
 # Changelog
 
+## 0.5.2 — 2026-10-07
+
+O observatório deixa de ser um servidor MCP separado e passa a ser servido pelo próprio
+broker do projeto, atrás da mesma credencial de escopo.
+
+- O bloco opcional `observer` na configuração do broker aponta para um token de leitura
+  global. O broker conecta esse segundo cliente, acrescenta `memory_overview` ao mesmo
+  catálogo e encaminha a chamada por ele.
+- O agente passa a ver **um** servidor de memória. A entrada `jovememory-observatory` do
+  cliente pode ser removida.
+- **O token de leitura global deixa de estar no processo do agente.** Antes ele vivia no
+  `Authorization` da configuração do cliente; agora só o broker o lê, de arquivo externo
+  ao projeto. Isso é mais restrito do que a configuração anterior, não apenas diferente.
+- O observatório é global e continua disponível mesmo quando o repositório atual não
+  consegue se matricular.
+- `memory_connection_status` passa a declarar `observatory.configured`, `connected`,
+  `tools` e `error`.
+- Nenhuma ferramenta do observatório aceita `workspace`: o broker remove o campo do schema
+  e o descarta dos argumentos antes de encaminhar.
+- O roteamento é uma allowlist explícita de `memory_overview`, e a conexão é recusada com
+  `OBSERVER_ROLE` se a credencial expuser qualquer ferramenta fora dela. Confiar apenas no
+  papel do token permitiria que um `observer.token_file` apontado por engano para um token
+  de administrador transformasse o broker em repasse global de privilégio.
+- Falha em uma chamada do observatório derruba a conexão, para que o próximo ciclo
+  reconecte e o catálogo não declare uma ferramenta que falha.
+- `tools/list` do projeto é isolado em try/catch: um endpoint de projeto fora do ar não
+  derruba mais o observatório junto.
+- Sem repositório vinculado, o observatório continua funcionando. O limite de "credencial
+  fora do projeto" passa a ser o diretório de trabalho, e não o home, que rejeitaria a
+  própria configuração documentada.
+
+Corrigido na revisão, vindo de 0.5.1:
+
+- O estado barato do repositório passou a incluir `git diff HEAD`. `status --porcelain` não
+  contém hash de conteúdo, então dois conteúdos do mesmo arquivo já modificado produziam
+  estado idêntico e o hash de fonte ficava obsoleto em silêncio, sem erro visível.
+- Falhas de constraint do Postgres passam a considerar o nome da constraint, para que uma
+  colisão de `projects.repository_id` entre workspaces reporte `PROJECT_COLLISION` em vez da
+  mensagem genérica de item duplicado.
+- O braço semântico da busca de mídia ganhou desempate estável por `m.id`.
+
+Isolado do 0.5.1 porque altera o catálogo de ferramentas e o que o agente enxerga, e por
+isso exige smoke próprio depois do deploy.
+
 ## 0.5.1 — 2026-10-07
 
 Correções de integridade, determinismo e escala, sem mudança de contrato público.

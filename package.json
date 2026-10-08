@@ -1,6 +1,6 @@
 {
   "name": "jovememory",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "Mem\u00f3ria persistente com ativa\u00e7\u00e3o autom\u00e1tica para agentes, local e Railway.",
   "scripts": {
     "start": "node --env-file-if-exists=.env src/http.mjs",

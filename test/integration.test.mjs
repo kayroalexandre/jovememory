@@ -486,6 +486,142 @@ test('Isolated database, object storage, MCP and backup lifecycle',async t=>{
       await writeFile(backupDir+'/'+manifest.objects[0].file,'tampered');
       await assert.rejects(verifyRestore(backupDir,database(process.env.MIGRATION_DATABASE_URL,restoreName)),{code:'INTEGRITY'});
     });
+    await t.test('One broker serves project memory and the observatory without exposing the observer token',async()=>{
+      const folder=await mkdtemp(tmpdir()+'/jovememory-obs-'),root=folder+'/repo';await mkdir(root);
+      const git=args=>execFileSync('git',['-C',root,...args],{stdio:['ignore','pipe','ignore']});
+      git(['init']);git(['remote','add','origin','https://github.com/example/synthetic-observer.git']);
+      await writeFile(root+'/README.md','Synthetic observatory source.');git(['add','README.md']);
+      const controllerToken=randomBytes(32).toString('base64url'),observerToken=randomBytes(32).toString('base64url'),adminToken=randomBytes(32).toString('base64url');
+      const controller={id:'synthetic-obs-controller',role:'provisioner',workspaces:['*'],sha256:hash(controllerToken)};
+      const observerProfile={id:'synthetic-obs-observer',role:'observer',workspaces:['*'],sha256:hash(observerToken)};
+      const adminProfile={id:'synthetic-obs-admin',role:'admin',workspaces:['*'],sha256:hash(adminToken)};
+      const config={...c,reviewMode:'automatic',profiles:[controller,observerProfile,adminProfile]};
+      const http=createApp(new Service(store,config),config).listen(0,'127.0.0.1');await new Promise(resolve=>http.once('listening',resolve));
+      const endpoint=`http://127.0.0.1:${http.address().port}/mcp`;
+      await writeFile(folder+'/controller.token',controllerToken,{mode:0o600});
+      await writeFile(folder+'/observer.token',observerToken,{mode:0o600});
+      await writeFile(folder+'/broker.json',JSON.stringify({endpoint,provisioner_token_file:folder+'/controller.token',observer:{token_file:folder+'/observer.token'}}),{mode:0o600});
+      const client=new Client({name:'synthetic-obs-agent',version:'1'});
+      try {
+        const transport=new StdioClientTransport({command:process.execPath,args:[process.cwd()+'/src/project-bridge.mjs'],cwd:root,env:{...process.env,JOVEMEMORY_BROKER_CONFIG:folder+'/broker.json'},stderr:'pipe'});
+        await client.connect(transport);
+        const catalog=await client.listTools();
+        const names=catalog.tools.map(x=>x.name);
+        // A single memory namespace: the observatory is served here, not as another server.
+        assert.ok(names.includes('memory_write'),'Project memory is missing.');
+        assert.ok(names.includes('memory_overview'),'Observatory is missing from the unified broker.');
+        assert.ok(names.includes('memory_connection_status'));
+        assert.ok(!names.some(x=>x.startsWith('memory_open_project')),'Enrollment stays hidden.');
+        assert.ok(!names.some(x=>x.startsWith('memory_revoke_project')));
+        // The agent still cannot name a workspace on any tool.
+        for(const tool of catalog.tools.filter(x=>x.name!=='memory_connection_status'))
+          assert.equal(tool.inputSchema.properties?.workspace,undefined,`${tool.name} still accepts workspace`);
+        const status=(await client.callTool({name:'memory_connection_status',arguments:{}})).structuredContent;
+        assert.equal(status.bound,true);
+        assert.equal(status.observatory.configured,true);
+        assert.deepEqual(status.observatory.tools,['memory_overview']);
+        assert.equal(status.observatory.connected,true);
+        const written=await client.callTool({name:'memory_write',arguments:{content:'Synthetic unified orchid note.'}});
+        assert.equal(written.structuredContent.workspace,'synthetic-observer');
+        const overview=(await client.callTool({name:'memory_overview',arguments:{limit:100}})).structuredContent;
+        assert.equal(overview.memory_content_included,false);
+        assert.ok(overview.projects.some(x=>x.workspace==='synthetic-observer'));
+        // Aggregates only: the observer path must not leak corpus. The write result legitimately
+        // holds the note the agent just wrote, so it is excluded from the content check but not
+        // from the credential check.
+        const observerSurfaces=[JSON.stringify(overview),JSON.stringify(status),JSON.stringify(names)];
+        assert.ok(!observerSurfaces.some(s=>s.includes('Synthetic unified orchid note.')),'Observatory leaked memory content.');
+        for(const token of [observerToken,controllerToken])
+          assert.ok(![...observerSurfaces,JSON.stringify(written)].some(s=>s.includes(token)),'A credential leaked into a broker surface.');
+        // A denied workspace on the project path stays denied.
+        const denied=await client.callTool({name:'memory_read',arguments:{workspace:'synthetic-a',id:written.structuredContent.item.id}});
+        assert.equal(denied.isError,true);
+      } finally {await client.close();http.closeAllConnections();await new Promise(resolve=>http.close(resolve));await rm(folder,{recursive:true,force:true});}
+      // Without an observer block the broker still starts and simply reports the observatory as unconfigured.
+      const bare=await mkdtemp(tmpdir()+'/jovememory-bare-'),bareRoot=bare+'/repo';await mkdir(bareRoot);
+      const bareGit=args=>execFileSync('git',['-C',bareRoot,...args],{stdio:['ignore','pipe','ignore']});
+      bareGit(['init']);bareGit(['remote','add','origin','https://github.com/example/synthetic-bare.git']);
+      await writeFile(bareRoot+'/README.md','Synthetic bare source.');bareGit(['add','README.md']);
+      await writeFile(bare+'/controller.token',controllerToken,{mode:0o600});
+      await writeFile(bare+'/broker.json',JSON.stringify({endpoint,provisioner_token_file:bare+'/controller.token'}),{mode:0o600});
+      const bareHttp=createApp(new Service(store,config),config).listen(0,'127.0.0.1');await new Promise(resolve=>bareHttp.once('listening',resolve));
+      const bareEndpoint=`http://127.0.0.1:${bareHttp.address().port}/mcp`;
+      await writeFile(bare+'/broker.json',JSON.stringify({endpoint:bareEndpoint,provisioner_token_file:bare+'/controller.token'}),{mode:0o600});
+      const bareClient=new Client({name:'synthetic-bare-agent',version:'1'});
+      try {
+        await bareClient.connect(new StdioClientTransport({command:process.execPath,args:[process.cwd()+'/src/project-bridge.mjs'],cwd:bareRoot,env:{...process.env,JOVEMEMORY_BROKER_CONFIG:bare+'/broker.json'},stderr:'pipe'}));
+        const bareNames=(await bareClient.listTools()).tools.map(x=>x.name);
+        assert.ok(bareNames.includes('memory_write'));
+        assert.ok(!bareNames.includes('memory_overview'),'Observatory appeared without a configured credential.');
+        const bareStatus=(await bareClient.callTool({name:'memory_connection_status',arguments:{}})).structuredContent;
+        assert.equal(bareStatus.observatory.configured,false);assert.equal(bareStatus.observatory.connected,false);
+      } finally {await bareClient.close();bareHttp.closeAllConnections();await new Promise(resolve=>bareHttp.close(resolve));await rm(bare,{recursive:true,force:true});}
+      // A token that is not an observer must never become a global privilege passthrough.
+      // Both directions matter: a provisioner cannot even see the observatory, while an admin
+      // token would see memory_overview *plus* every read, write and admin tool.
+      const escalated=await mkdtemp(tmpdir()+'/jovememory-escalate-'),escRoot=escalated+'/repo';await mkdir(escRoot);
+      const escGit=args=>execFileSync('git',['-C',escRoot,...args],{stdio:['ignore','pipe','ignore']});
+      escGit(['init']);escGit(['remote','add','origin','https://github.com/example/synthetic-escalated.git']);
+      await writeFile(escRoot+'/README.md','Synthetic escalation source.');escGit(['add','README.md']);
+      const escHttp=createApp(new Service(store,config),config).listen(0,'127.0.0.1');await new Promise(resolve=>escHttp.once('listening',resolve));
+      const escEndpoint=`http://127.0.0.1:${escHttp.address().port}/mcp`;
+      await writeFile(escalated+'/controller.token',controllerToken,{mode:0o600});
+      await writeFile(escalated+'/admin.token',adminToken,{mode:0o600});
+      // Tools the project writer legitimately does not have; their presence would mean the
+      // observatory route handed its catalog over. memory_read/search are on purpose absent here:
+      // they belong to the project catalog, and are checked by scope instead.
+      const forbidden=['memory_revoke_project','memory_link','memory_index','memory_create_workspace','memory_cross_workspace','memory_open_project'];
+      try {
+        for(const [label,file,token] of [['provisioner','controller.token',controllerToken],['admin','admin.token',adminToken]]) {
+          await writeFile(escalated+'/broker.json',JSON.stringify({endpoint:escEndpoint,
+            provisioner_token_file:escalated+'/controller.token',observer:{token_file:escalated+'/'+file}}),{mode:0o600});
+          const escClient=new Client({name:'synthetic-escalation-agent',version:'1'});
+          try {
+            await escClient.connect(new StdioClientTransport({command:process.execPath,args:[process.cwd()+'/src/project-bridge.mjs'],cwd:escRoot,env:{...process.env,JOVEMEMORY_BROKER_CONFIG:escalated+'/broker.json'},stderr:'pipe'}));
+            const escNames=(await escClient.listTools()).tools.map(x=>x.name);
+            assert.ok(escNames.includes('memory_write'),`Project memory should still work with the ${label} observer slot.`);
+            assert.ok(!escNames.includes('memory_overview'),`A ${label} credential was accepted for the observatory.`);
+            for(const name of forbidden) assert.ok(!escNames.includes(name),`${name} leaked through the ${label} observatory route.`);
+            const escStatus=(await escClient.callTool({name:'memory_connection_status',arguments:{}})).structuredContent;
+            assert.equal(escStatus.observatory.configured,true,`${label} slot should report as configured.`);
+            assert.equal(escStatus.observatory.connected,false,`${label} slot must not report as connected.`);
+            assert.equal(escStatus.observatory.error,'OBSERVER_ROLE');
+            assert.deepEqual(escStatus.observatory.tools,[]);
+            // Even asked directly, the observatory route refuses rather than forwarding.
+            const escCall=await escClient.callTool({name:'memory_overview',arguments:{limit:10}});
+            assert.equal(escCall.isError,true,`${label} credential reached memory_overview.`);
+            assert.ok(!JSON.stringify(escCall).includes(token),`The ${label} token appeared in an error result.`);
+            // The project credential must keep its own scoping even while a bad observer slot exists.
+            const scoped=await escClient.callTool({name:'memory_write',arguments:{content:'Synthetic escalation probe.'}});
+            assert.equal(scoped.structuredContent.workspace,'synthetic-escalated');
+            const crossScope=await escClient.callTool({name:'memory_read',arguments:{workspace:'synthetic-a',id:scoped.structuredContent.item.id}});
+            assert.equal(crossScope.isError,true,`${label} slot weakened project workspace scoping.`);
+          } finally {await escClient.close();}
+        }
+      } finally {escHttp.closeAllConnections();await new Promise(resolve=>escHttp.close(resolve));await rm(escalated,{recursive:true,force:true});}
+      // The observatory is global: it must work even where no repository is bound.
+      // The config lives outside the working directory, mirroring ~/.config/jovememory/broker.json.
+      const orphanBase=await mkdtemp(tmpdir()+'/jovememory-orphan-'),orphanWork=orphanBase+'/work',orphanConf=orphanBase+'/conf';
+      await mkdir(orphanWork);await mkdir(orphanConf,{mode:0o700});
+      const orphanHttp=createApp(new Service(store,config),config).listen(0,'127.0.0.1');await new Promise(resolve=>orphanHttp.once('listening',resolve));
+      await writeFile(orphanConf+'/controller.token',controllerToken,{mode:0o600});
+      await writeFile(orphanConf+'/observer.token',observerToken,{mode:0o600});
+      await writeFile(orphanConf+'/broker.json',JSON.stringify({endpoint:`http://127.0.0.1:${orphanHttp.address().port}/mcp`,provisioner_token_file:orphanConf+'/controller.token',observer:{token_file:orphanConf+'/observer.token'}}),{mode:0o600});
+      const orphanClient=new Client({name:'synthetic-orphan-agent',version:'1'});
+      try {
+        await orphanClient.connect(new StdioClientTransport({command:process.execPath,args:[process.cwd()+'/src/project-bridge.mjs'],cwd:orphanWork,env:{...process.env,JOVEMEMORY_BROKER_CONFIG:orphanConf+'/broker.json'},stderr:'pipe'}));
+        const orphanNames=(await orphanClient.listTools()).tools.map(x=>x.name);
+        assert.ok(orphanNames.includes('memory_overview'),'Observatory needs a repository to work.');
+        assert.ok(!orphanNames.includes('memory_write'),'Project memory appeared without a repository.');
+        const orphanStatus=(await orphanClient.callTool({name:'memory_connection_status',arguments:{}})).structuredContent;
+        assert.equal(orphanStatus.bound,false);assert.equal(orphanStatus.repository_name,null);
+        assert.equal(orphanStatus.observatory.connected,true);
+        const orphanOverview=(await orphanClient.callTool({name:'memory_overview',arguments:{limit:100}})).structuredContent;
+        assert.equal(orphanOverview.memory_content_included,false);
+        const orphanWrite=await orphanClient.callTool({name:'memory_write',arguments:{content:'Synthetic orphan note.'}});
+        assert.equal(orphanWrite.isError,true);
+      } finally {await orphanClient.close();orphanHttp.closeAllConnections();await new Promise(resolve=>orphanHttp.close(resolve));await rm(orphanBase,{recursive:true,force:true});}
+    });
     await t.test('Soft deletion removes parent media from retrieval without erasing history',async()=>{
       await call('memory_delete',{workspace:'synthetic-a',id:itemId,reason:'Synthetic deletion'},reviewer);
       assert.equal((await call('memory_read',{workspace:'synthetic-a',id:itemId},reader)).item.status,'deleted');

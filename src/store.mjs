@@ -12,9 +12,17 @@ const constraints = {
   '40001': ['CONFLICT','A concurrent write won the race; retry with current state.'],
   '40P01': ['CONFLICT','A concurrent writer held a lock; retry with current state.']
 };
+// The same SQLSTATE means different things per constraint; a generic message would misdirect.
+const byConstraint = {
+  projects_repository_id_key:['PROJECT_COLLISION','Another workspace is already bound to this repository; no credentials were issued.'],
+  projects_pkey:['PROJECT','This project record already exists.'],
+  nodes_pkey:['NODE','This node already exists in the workspace.'],
+  links_pkey:['EXISTS','This link already exists.']
+};
 export function declaredFault(error) {
   if (error instanceof Fault) return error;
-  const mapped=error && typeof error.code==='string' ? constraints[error.code] : null;
+  const named=error && typeof error.constraint==='string' ? byConstraint[error.constraint] : null;
+  const mapped=named || (error && typeof error.code==='string' ? constraints[error.code] : null);
   return mapped ? new Fault(mapped[0],mapped[1]) : error;
 }
 // Reproduce the exact `page_time` rendering used by the page query so a rebuilt cursor compares identically.
@@ -354,7 +362,7 @@ export class Store {
       ORDER BY m.id LIMIT $4`,[workspace,asOf,query,limit]);
     if(r.rowCount || !embedding) return {results:r.rows,arm:'lexical'};
     const vector=await c.query(`SELECT m.id,m.item_id,m.sha256,m.mime,m.extracted_text,1-(m.embedding <=> $3::vector) AS score FROM media m JOIN items i ON i.workspace=m.workspace AND i.id=m.item_id
-      WHERE m.workspace=$1 AND ${active('i')} AND m.embedding_model=$4 AND vector_dims(m.embedding)=$5 ORDER BY m.embedding <=> $3::vector LIMIT $6`,[workspace,asOf,JSON.stringify(embedding),model,embedding.length,limit]);
+      WHERE m.workspace=$1 AND ${active('i')} AND m.embedding_model=$4 AND vector_dims(m.embedding)=$5 ORDER BY m.embedding <=> $3::vector, m.id LIMIT $6`,[workspace,asOf,JSON.stringify(embedding),model,embedding.length,limit]);
     return {results:vector.rows,arm:'semantic'};
   }); }
   async mediaPointer(workspace,id) { return this.transaction(workspace,async c=>(await c.query(`SELECT m.* FROM media m JOIN items i ON i.workspace=m.workspace AND i.id=m.item_id
