@@ -117,7 +117,8 @@ export async function startBridge({directory=process.cwd(),configPath=process.en
   });
   server.setRequestHandler(CallToolRequestSchema,async request=>{
     if(request.params.name==='memory_connection_status') {
-      if(project && connectionError) try {await connect();await sync(true);}catch(e){connectionError=e.code || 'CONNECTION';}
+      // A dropped credential nulls remote; a status probe should heal it, not just report it.
+      if(project && (!remote || connectionError)) try {await connect();await sync(true);}catch(e){connectionError=e.code || 'CONNECTION';}
       if(observerConfigured && (!observer || observerError)) void connectObserver();
       const status={bound:Boolean(project && remote && !connectionError),repository_name:project?.repository_name || null,workspace:project?.repository_name || null,source_observation_error:syncError || connectionError || null,automatic_source_refresh_seconds:60,
         observatory:{configured:observerConfigured,connected:Boolean(observer && !observerError),tools:observerTools.map(t=>t.name),error:observerError}};
@@ -136,6 +137,9 @@ export async function startBridge({directory=process.cwd(),configPath=process.en
       }
     }
     try {
+      // A nulled remote is a dropped or rotated credential, not a missing repository: try to
+      // re-enroll before refusing, so a rotation costs one failed call instead of a restart.
+      if(project && !remote && !connectionError) try {await connect();}catch(e){connectionError=e.code || 'CONNECTION';}
       ensure(project && remote && !connectionError,'REPOSITORY','Open a Git repository and reconnect. There is no shared fallback workspace.');
       const name=request.params.name,args=request.params.arguments || {};
       ensure(!['memory_open_project','memory_overview','memory_revoke_project','memory_cross_workspace','memory_create_workspace','memory_link','memory_index'].includes(name),'FORBIDDEN','Administrative and cross-project operations are not exposed by this project connection.');
@@ -143,7 +147,17 @@ export async function startBridge({directory=process.cwd(),configPath=process.en
       const current=await identifyRepository(project.root);ensure(current.repository_id===project.repository_id,'PROJECT_CHANGED','Repository changed; reconnect memory.');
       try {await refresh();}catch(e){if(e.code==='PROJECT_CHANGED') throw e;}
       const hasWorkspace=!['memory_version','memory_capabilities'].includes(name);
-      const result=await remote.callTool({name,arguments:{...args,...(hasWorkspace?{workspace:project.repository_name}:{})}},undefined,{timeout:240000});
+      let result;
+      try {
+        result=await remote.callTool({name,arguments:{...args,...(hasWorkspace?{workspace:project.repository_name}:{})}},undefined,{timeout:240000});
+      } catch(error) {
+        // A transport or credential failure (rotated signing key, dropped connection) must not
+        // leave the broker holding a dead credential until the token expires. Drop it so the
+        // next call re-enrolls; an isError result means the credential was accepted, and the
+        // broker's own Faults above never reach this hook.
+        remote=null;void server.sendToolListChanged().catch(()=>{});
+        throw error;
+      }
       if(syncError && result.structuredContent) {
         result.structuredContent={...result.structuredContent,degraded:[...(result.structuredContent.degraded || []),'source_observation_unavailable']};
         result.content=[{type:'text',text:JSON.stringify(result.structuredContent)}];
